@@ -3,7 +3,6 @@
  *
  *  Author      :  ItzKarizma  <https://github.com/ItzKarizma>
  *  Created     :  03 Jul 2025
- *  Last update :  01 Sep 2025
  *
  *  Build       :  gcc -lm perceptron.c -o perceptron
  *  Usage       :  ./perceptron
@@ -11,11 +10,6 @@
  *  Description :
  *      A simple implementation of the Perceptron algorithm for binary
  *      classification using supervised learning.
- *
- *  Todo / notes:
- *      WARNING, May overfit to your expectations.
- *      Jokes aside, there are a lot of things I could improve on
- *      but it works so that's something.
  *
  *  License     :  Custom MIT  (see LICENSE.md)
  *====================================================================*/

@@ -1,9 +1,8 @@
 /*======================================================================
- *  kmeans.c  ―  K-Means
+ *  kmeans.c  ―  K-Means (Unsupervized learning)
  *
  *  Author      :  ItzKarizma  <https://github.com/ItzKarizma>
  *  Created     :  27 Jun 2025
- *  Last update :  04 Sep 2025
  *
  *  Build       :  gcc -lm kmeans.c -o kmeans
  *  Usage       :  ./kmeans
@@ -13,11 +12,6 @@
  *      partitions a dataset into K distinct, non-overlapping clusters,
  *      where each sample belongs to the cluster with the nearest mean (or "centroid").
  *      It returns the best K value based on the elbow method (if a specific K value is undesired).
- * 
- *  Todo / notes:
- *      - optimize some parts of the code
- *      - fix some ugly code? Even though everything I write is cool B)
- *      - add better error handling & tests
  *
  *  License     :  Custom MIT  (see LICENSE.md)
  *====================================================================*/
