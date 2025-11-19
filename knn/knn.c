@@ -3,7 +3,6 @@
  *
  *  Author      :  ItzKarizma  <https://github.com/ItzKarizma>
  *  Created     :  25 Jun 2025
- *  Last update :  31 Aug 2025
  *
  *  Build       :  gcc -lm knn.c -o knn
  *  Usage       :  ./knn
@@ -13,10 +12,6 @@
  *      standardises the data in-place, returns the K nearest
  *      neighbours for a query sample and outputs what the sample
  *      was classified as.
- *
- *  Todo / notes:
- *      - optimize some parts of the code (I'm lazy, sorry)
- *      - free() some pointers if we ever loop KNN calls ?
  *
  *  License     :  Custom MIT  (see LICENSE.md)
  *====================================================================*/
@@ -661,7 +656,7 @@ int main(int argc, char *argv[])
                 exit(1);
             }
 
-            unlabeledDataset->samples = malloc(numberOfSamples * sizeof(Sample));
+            unlabeledDataset->samples = malloc(sizeof(Dataset));
             if (unlabeledDataset->samples == NULL)
             {
                 perror("[main] Failed to allocate memory for unlabeledDataset->samples");
