@@ -113,7 +113,6 @@ Dataset *read_data_from_file(char *fileName, size_t numberOfFeatures, bool isLab
                     exit(1);
                 }
 
-
                 dataset->samples[dataset->numberOfSamples].features = malloc(numberOfFeatures * sizeof(double));
                 if (dataset->samples[dataset->numberOfSamples].features == NULL)
                 {
@@ -686,6 +685,7 @@ int main(int argc, char *argv[])
         }
 
         free_dataset(unlabeledDataset);
+        free_dataset(unlabeledDatasetCopy);
     }
 
     // Save the model if necessary

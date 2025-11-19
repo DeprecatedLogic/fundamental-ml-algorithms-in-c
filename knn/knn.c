@@ -75,7 +75,6 @@ LabelStats;
 Dataset *read_data_from_file(char *fileName, size_t numberOfFeatures, bool isLabeled)
 {
     FILE *dataFile = fopen(fileName, "r"); // Does NOT throw, returns NULL upon failure
-
     if (dataFile == NULL) // File doesn't exist or maybe insufficient permissions to read ?
     {
         fprintf(stderr, "[read_data_from_file] Error opening file `%s`: %s\n", fileName, strerror(errno));
@@ -85,7 +84,7 @@ Dataset *read_data_from_file(char *fileName, size_t numberOfFeatures, bool isLab
     Dataset *dataset = calloc(1, sizeof(Dataset));
     if (dataset == NULL)
     {
-        perror("[read_data_from_file] Failed to allocate memory for samples");
+        perror("[read_data_from_file] Failed to allocate memory for dataset");
         exit(1);
     }
 
@@ -121,32 +120,27 @@ Dataset *read_data_from_file(char *fileName, size_t numberOfFeatures, bool isLab
                 dataset->samples = realloc(dataset->samples, (dataset->numberOfSamples + 1) * sizeof(Sample)); // realloc can act as malloc too in case of initialization
                 if (dataset->samples == NULL) // check
                 {
-                    perror("[read_data_from_file] Failed to re-allocate memory for dataset->samples");
+                    perror("[read_data_from_file] Failed reallocating memory for dataset->samples");
                     exit(1);
                 }
 
                 dataset->samples[dataset->numberOfSamples].features = malloc(numberOfFeatures * sizeof(double));
                 if (dataset->samples[dataset->numberOfSamples].features == NULL)
                 {
-                    perror("[read_data_from_file] Failed to allocate memory for dataset->samples[dataset->numberOfSamples].features");
+                    perror("[read_data_from_file] Failed allocating memory for dataset->samples[dataset->numberOfSamples].features");
                     exit(1);
                 }
                 memcpy(dataset->samples[dataset->numberOfSamples].features, tempFeaturesBuffer, numberOfFeatures * sizeof(double));
 
                 if (isLabeled == true)
                 {
-                    dataset->samples[dataset->numberOfSamples].label = malloc(tokenBufferSize + 1); // +1 for null-terminator (Important)
-                    if (dataset->samples[dataset->numberOfSamples].label == NULL)
-                    {
-                        perror("[read_data_from_file] Failed to allocate memory for dataset->samples[dataset->numberOfSamples].label");
-                        exit(1);
-                    }
-                    strcpy(dataset->samples[dataset->numberOfSamples].label, tokenBuffer);
+                    dataset->samples[dataset->numberOfSamples].label = strdup(tokenBuffer);
                 }
                 else
                 {
                     dataset->samples[dataset->numberOfSamples].label = NULL;
                 }
+
                 ++dataset->numberOfSamples;
                 tokensRead = 0;
             }
@@ -466,12 +460,6 @@ Dataset *get_K_nearest_neighbors(const Dataset *dataset, const Sample *sample, s
                 perror("[get_K_nearest_neighbors] Failed to allocate memory for neighbors->samples[neighbors->numberOfSamples].features");
                 exit(1);
             }
-            neighbors->samples[neighbors->numberOfSamples].label = malloc(strlen(dataset->samples[iSample].label));
-            if (neighbors->samples[neighbors->numberOfSamples].label == NULL)
-            {
-                perror("[get_K_nearest_neighbors] Failed to allocate memory for neighbors->samples[neighbors->numberOfSamples].label");
-                exit(1);
-            }
             neighbors->samples[neighbors->numberOfSamples].label = strdup(dataset->samples[iSample].label);
 
             for (size_t iFeature = 0; iFeature < numberOfFeatures; ++iFeature)
@@ -518,7 +506,7 @@ LabelStats get_label_stats(const Dataset *dataset)
 
             if (labels != NULL && labelFrequencies != NULL)
             {
-                labels[labelsSize] = strdup(dataset->samples[iSample].label); // Copy the string and sample to it
+                labels[labelsSize] = strdup(dataset->samples[iSample].label); // Copy the sample's label
                 labelFrequencies[labelsSize] = 1; // Equals 1 instead of incrementing because it's a NEW data label, with 1 sample
                 ++labelsSize;
             }
@@ -546,26 +534,43 @@ LabelStats get_label_stats(const Dataset *dataset)
  *
  * @returns The predicted label for the new sample.
  */
-const char *classify_data(const Dataset *neighbors)
+char *classify_data(const Dataset *neighbors)
 {
     LabelStats stats = get_label_stats(neighbors);
     size_t majorityVote = 0;
-    const char *label = "Unlabeled";
+    size_t winnerIndex = -1;
 
     for (size_t iLabel = 0; iLabel < stats.numberOfLabels; ++iLabel)
     {
         if (stats.frequencies[iLabel] > majorityVote)
         {
             majorityVote = stats.frequencies[iLabel];
-            label = stats.labels[iLabel];
+            winnerIndex = iLabel;
         }
     }
-    return label;
+
+    char *predictedLabel = NULL;
+    if (winnerIndex == -1)
+    {
+        predictedLabel = strdup("Unlabeled");
+    }
+    else
+    {
+        predictedLabel = strdup(stats.labels[winnerIndex]);
+    }
+
+    for (size_t iLabel = 0; iLabel < stats.numberOfLabels; ++iLabel)
+    {
+        free(stats.labels[iLabel]);
+    }
+    free(stats.labels);
+    free(stats.frequencies);
+    return predictedLabel;
 }
 
 int main(int argc, char *argv[])
 {
-    unsigned int answer; // for questions
+    unsigned int answer = 0; // for questions
 
     printf("Number of features (label not included): ");
     size_t numberOfFeatures = 0; scanf("%zu", &numberOfFeatures); // The number of features (label is not included in this number)
@@ -602,11 +607,12 @@ int main(int argc, char *argv[])
         for (size_t iSample = 0; iSample < datasetTest->numberOfSamples; ++iSample)
         {
             Dataset *neighbors = get_K_nearest_neighbors(dataset, &datasetTest->samples[iSample], numberOfFeatures, K);
-            const char *predictedLabel = classify_data(neighbors);
+            char *predictedLabel = classify_data(neighbors);
 
             int prediction = (strcmp(datasetTest->samples[iSample].label, predictedLabel) == 0)? 1 : 0;
             correctPredictions += prediction;
             printf("\nSample %zu was labeled %s\n", iSample+1, (prediction == 1)? "CORRECTLY" : "INCORRECTLY");
+            free(predictedLabel);
             free_dataset(neighbors);
         }
 
@@ -622,7 +628,7 @@ int main(int argc, char *argv[])
             goto repeatAccuracyTest;
         }
 
-        free(datasetTest);
+        free_dataset(datasetTest);
     }
 
     printf("Would you like to run the algorithm on unlabeled data (0 -> no; 1 -> yes)? ");
@@ -693,24 +699,17 @@ int main(int argc, char *argv[])
         for (size_t iSample = 0; iSample < unlabeledDataset->numberOfSamples; ++iSample)
         {
             Dataset *neighbors = get_K_nearest_neighbors(dataset, &unlabeledDataset->samples[iSample], numberOfFeatures, K);
-            const char *predictedLabel = classify_data(neighbors);
+            char *predictedLabel = classify_data(neighbors);
 
             // If there was a previous label that was dynamically allocated, free it first
             if (unlabeledDataset->samples[iSample].label != NULL)
             {
                 free(unlabeledDataset->samples[iSample].label);
             }
-
-            // Allocate new memory for the copy and perform the copy
-            unlabeledDataset->samples[iSample].label = malloc(strlen(predictedLabel) + 1);
-            if (unlabeledDataset->samples[iSample].label == NULL)
-            {
-                perror("[main] Failed to allocate memory for sample label copy");
-                exit(1);
-            }
             unlabeledDataset->samples[iSample].label = strdup(predictedLabel);
 
             printf("\nSample %zu was labeled as: %s\n", iSample+1, predictedLabel);
+            free(predictedLabel);
             free_dataset(neighbors);
         }
 
@@ -721,7 +720,7 @@ int main(int argc, char *argv[])
         {
             printf("File path (directory must exist): ");
             scanf("%255s", path);
-            FILE* file = fopen(path, "w");
+            FILE *file = fopen(path, "w");
 
             for (size_t iSample = 0; iSample < unlabeledDataset->numberOfSamples; ++iSample)
             {
