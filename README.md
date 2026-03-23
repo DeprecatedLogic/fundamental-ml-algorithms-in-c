@@ -23,8 +23,8 @@ gcc -lm knn.c -o knn
 ```
 
 Make sure you have a file with data (raw / not-standardized) and properly formatted.
-Data files should be space-separated, with features first and the label (if necessary) last on each line.
-Examples are already included in the repository, specifically in the *sample_data* folder.
+Data files should be space-separated, with features first and the label (if necessary) last for each line.
+Examples are already included in the repository, specifically in the *datasets* folder.
 
 ---
 
@@ -67,12 +67,10 @@ Examples are already included in the repository, specifically in the *sample_dat
 
 Built as a learning project to deeply understand how these algorithms work under the hood, not just to *use* machine learning, but to *build* it from scratch.
 
-This was originally required for my AI studies (1st year of a Bachelor's degree), where we were asked to implement parts of these algorithms. Just coding *some* functions wasn’t satisfying enough for me, so I decided to start completely from scratch and make everything more dynamic and to my own liking...
+This was originally required for my AI studies (1st year of a Bachelor's degree), where we were asked to implement parts of these 3 (KMeans, KNN, Perceptron) algorithms. Just coding *some* functions wasn’t satisfying enough for me, so I decided to start completely from zero and make everything more dynamic and to my own liking...
 
 ---
 
 ### Author Notes
 
-Made with caffeine and occasional frustration by ItzKarizma.
-
-PS: I just hope there are no memory leaks, but that's a test for another time (if I'm still alive).
+Made with caffeine and occasional frustration by [DeprecatedLogic](https://github.com/DeprecatedLogic).
