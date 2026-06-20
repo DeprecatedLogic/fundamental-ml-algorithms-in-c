@@ -1,0 +1,6 @@
+.vscode
+*cache*
+builds/
+models/
+*.bak
+*output*
