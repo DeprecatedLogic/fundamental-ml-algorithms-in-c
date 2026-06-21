@@ -13,24 +13,24 @@ The goal is to deeply understand the underlying mechanics of these algorithms.
 
 ### How to Run ?
 
-Replace *knn* with the desired algorithm (*kmeans* or *perceptron*):
+Replace *knn* with the desired algorithm (*kmeans*, *perceptron*, or *decision_tree*):
 
 ```bash
-git clone https://github.com/ItzKarizma/fundamental-ml-algorithms-in-c.git
-cd ./fundamental-ml-algorithms-in-c/knn
+git clone https://github.com/DeprecatedLogic/fundamental-ml-algorithms-in-c.git
+cd ./fundamental-ml-algorithms-in-c/src
 gcc -lm knn.c -o knn
 ./knn
 ```
 
-Make sure you have a file with data (raw / not-standardized) and properly formatted.
-Data files should be space-separated, with features first and the label (if necessary) last for each line.
+Make sure you have a properly formatted file with data.
+Data files should be space-separated, with features first and the label (if necessary) last for each line/row.
 Examples are already included in the repository, specifically in the *datasets* folder.
 
 ---
 
 ### KNN
+A supervised algorithm for classification.
 
-* Supervised algorithm for classification.
 * Takes user input for **features** and **K**.
 * Predicts based on the closest neighbors.
 * Handles invalid data robustly (as long as you don't try it).
@@ -38,8 +38,8 @@ Examples are already included in the repository, specifically in the *datasets* 
 ---
 
 ### K-Means
+An unsupervised clustering algorithm.
 
-* Unsupervised clustering algorithm.
 * Supports automatic **K** detection using the **Elbow Method**.
 * Handling of empty clusters is not entirely implemented but it's there (I'm lazy to finish this).
 * Highly configurable: thresholds, custom K, max K, etc.
@@ -47,10 +47,19 @@ Examples are already included in the repository, specifically in the *datasets* 
 ---
 
 ### Perceptron
+A supervised binary classifier using the perceptron update rule.
 
-* Supervised binary classifier using the perceptron update rule.
 * Supports adjustable learning rate.
 * Supports saving and loading a model.
+
+---
+
+### Decision Tree
+A supervised classifier that partitions data based on feature thresholds to create a hierarchical decision structure.
+
+* Features a custom, efficient file reader that handles large datasets with configurable delimiters and automatic comment stripping.
+* Includes binary serialization to save and load trained models, allowing for consistent deployment and inspection.
+* Built-in utilities for traversing and printing the learned node structure to the console for model transparency.
 
 ---
 
@@ -58,7 +67,7 @@ Examples are already included in the repository, specifically in the *datasets* 
 
 * Fully written in C with no external ML libraries.
 * Manual memory management (it's C after all).
-* Standardized input parsing.
+* Support for CLI-based configuration without hardcoded values.
 * Clear comments and docstrings (honestly, for future me in case one day I come back to this :P).
 
 ---

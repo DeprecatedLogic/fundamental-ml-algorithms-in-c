@@ -1,4 +1,4 @@
-Copyright (c) 2025 ItzKarizma
+Copyright (c) 2025 DeprecatedLogic
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -9,8 +9,6 @@ furnished to do so, subject to the following conditions:
 
 The above copyright notice, this permission notice, and the following credit statement shall be included in all
 copies or substantial portions of the Software.
-
-This software includes code developed by ItzKarizma (https://github.com/ItzKarizma)
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
