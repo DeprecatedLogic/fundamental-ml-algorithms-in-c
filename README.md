@@ -1,10 +1,11 @@
 ## Fundamental Machine Learning Algorithms in C
 
-This project implements three core machine learning algorithms from scratch in C:
+This project implements the following ML algorithms:
 
 * **K-Nearest Neighbors (KNN)**
 * **K-Means Clustering**
 * **Perceptron (Binary Classification)**
+* **Decision Tree**
 
 This repository contains my personal implementations of various machine learning algorithms, built from scratch in C.
 The goal is to deeply understand the underlying mechanics of these algorithms.
@@ -22,7 +23,7 @@ gcc -lm knn.c -o knn
 ./knn
 ```
 
-Make sure you have a properly formatted file with data.
+Make sure you have a properly formatted file.
 Data files should be space-separated, with features first and the label (if necessary) last for each line/row.
 Examples are already included in the repository, specifically in the *datasets* folder.
 
@@ -76,7 +77,7 @@ A supervised classifier that partitions data based on feature thresholds to crea
 
 Built as a learning project to deeply understand how these algorithms work under the hood, not just to *use* machine learning, but to *build* it from scratch.
 
-This was originally required for my AI studies (1st year of a Bachelor's degree), where we were asked to implement parts of these 3 (KMeans, KNN, Perceptron) algorithms. Just coding *some* functions wasn’t satisfying enough for me, so I decided to start completely from zero and make everything more dynamic and to my own liking...
+This was originally required for my AI studies (1st year of a Bachelor's degree), where we were asked to implement parts of these three (KMeans, KNN, Perceptron) algorithms. Just coding *some* functions wasn’t satisfying enough for me, so I decided to start completely from zero and make everything more dynamic and to my own liking...
 
 ---
 
