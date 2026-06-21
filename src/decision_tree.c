@@ -29,7 +29,7 @@
 #define MAX_PATH 256
 #define MAX_DELIM 16
 #define SUCCESS 0
-#define FAILURE 1
+#define FAILURE -1
 
 typedef struct
 {
@@ -168,6 +168,16 @@ void free_node(Node *node)
     if (global_args.debug) printf("[free_node] Node freed\n"); // Debugging
 }
 
+/**
+ * @brief Checks if a given string represents a valid number.
+ *
+ * Uses a Look-Up Table (LUT) for fast digit validation. Handles
+ * negative signs and a custom decimal delimiter.
+ *
+ * @param number The null-terminated string to check.
+ * @param decimals_delimiter The character used as the decimal separator.
+ * @return true if the string is a valid number, false otherwise.
+ */
 bool is_number(char *number, char decimals_delimiter)
 {
     if (*number == '-') ++number;
@@ -197,7 +207,18 @@ bool is_number(char *number, char decimals_delimiter)
     return true;
 }
 
-size_t encode_label(Dataset *dataset, char *label)
+/**
+ * @brief Encodes a string label into a size_t index.
+ *
+ * If the label doesn't exist in the dataset, it dynamically adds it
+ * to the dataset's labels array.
+ *
+ * @param dataset A pointer to the Dataset object.
+ * @param label The string label to encode.
+ * @param out_label_index Pointer to store the resulting encoded label index.
+ * @return SUCCESS if successful, FAILURE on memory allocation error.
+ */
+int encode_label(Dataset *dataset, char *label, size_t *out_label_index)
 {
     size_t label_index = 0;
     while (label_index < dataset->number_of_labels && strcmp(dataset->labels[label_index], label) != 0)
@@ -207,18 +228,36 @@ size_t encode_label(Dataset *dataset, char *label)
     
     if (label_index == dataset->number_of_labels)
     {
-        dataset->labels = realloc(dataset->labels, sizeof(char*) * (dataset->number_of_labels + 1));
+        char **temp_labels = realloc(dataset->labels, sizeof(char*) * (dataset->number_of_labels + 1));
         if (dataset->labels == NULL)
         {
             fprintf(stderr, "[encoded_label] Failed to re-allocate memory for dataset->labels\n");
-            exit(EXIT_FAILURE);
+            return FAILURE;
         }
+        dataset->labels = temp_labels;
         dataset->labels[dataset->number_of_labels++] = strdup(label);
     }
     if (global_args.debug) printf("[encoded_label] label: '%s' (length: %zu)\n", label, strlen(label));
-    return label_index;
+
+    *out_label_index = label_index;
+    return SUCCESS;
 }
 
+/**
+ * @brief Reads sample data from a delimited text file and constructs a Dataset.
+ *
+ * Parses a file line by line, skipping comments and empty lines. It handles BOM 
+ * stripping, tokenizes the features using the provided delimiter, and encodes 
+ * the label if the dataset is supervised.
+ *
+ * @param file_path The path to the dataset file.
+ * @param number_of_features The expected number of features per sample.
+ * @param is_labeled Boolean indicating if the last token on each line is a label.
+ * @param token_delimiter The string used to separate features/labels.
+ * @param decimals_delimiter The character used for decimals in floating-point numbers.
+ * @param comment_delimiter The string that marks the start of a comment.
+ * @return A pointer to the allocated Dataset, or NULL if an error occurs.
+ */
 Dataset *read_data_from_file(
     const char *file_path, size_t number_of_features, bool is_labeled,
     char *token_delimiter, char decimals_delimiter, char *comment_delimiter
@@ -327,7 +366,13 @@ Dataset *read_data_from_file(
             }
             else if (is_labeled)
             {
-                sample.encoded_label = encode_label(dataset, token_buffer);
+                if (encode_label(dataset, token_buffer, &sample.encoded_label) == FAILURE)
+                {
+                    free_dataset(dataset);
+                    free(sample.features);
+                    fclose(data_file);
+                    return NULL;
+                }
             }
 
             token_buffer = strtok(NULL, token_delimiter);
@@ -359,6 +404,18 @@ Dataset *read_data_from_file(
     return dataset;
 }
 
+/**
+ * @brief Constructs an array of value-label tuples for a specific feature.
+ *
+ * Extracts the feature values and their corresponding encoded labels 
+ * for the subset of samples defined by the node's indices. This is used
+ * as a preparation step before sorting and sweeping for the best split.
+ *
+ * @param dataset Pointer to the complete Dataset.
+ * @param root Pointer to the current Node containing the subset indices.
+ * @param feature_index The index of the feature to extract.
+ * @return A pointer to an array of Tuple structs, or NULL on allocation failure.
+ */
 Tuple *build_tuples_array(Dataset *dataset, Node *root, size_t feature_index)
 {
     // Build an array of value-label tuples from root->indices
@@ -382,6 +439,19 @@ Tuple *build_tuples_array(Dataset *dataset, Node *root, size_t feature_index)
     return value_label_arr;
 }
 
+/**
+ * @brief Sweeps through a sorted array of tuples to find the optimal split threshold.
+ *
+ * Calculates the Gini impurity for all possible split points in the 
+ * sorted feature values, keeping track of the split that minimizes 
+ * the weighted Gini impurity.
+ *
+ * @param tuples Pointer to the sorted array of value-label tuples.
+ * @param number_of_tuples The size of the tuples array.
+ * @param number_of_labels The total number of unique labels in the dataset.
+ * @param threshold Pointer to store the best split threshold found.
+ * @param gini Pointer to store the best Gini impurity found.
+ */
 void sweep(
     Tuple *tuples, size_t number_of_tuples, size_t number_of_labels,
     double *threshold, double *gini
@@ -395,6 +465,15 @@ void sweep(
         .frequencies = (size_t*)calloc(number_of_labels, sizeof(size_t)),
         .size = number_of_labels
     };
+
+    // Safety check for frequencies calloc
+    if (right_counts.frequencies == NULL || left_counts.frequencies == NULL)
+    {
+        fprintf(stderr, "[sweep] Failed to allocate memory for frequency arrays\n");
+        if (right_counts.frequencies) free(right_counts.frequencies);
+        if (left_counts.frequencies) free(left_counts.frequencies);
+        return;
+    }
 
     for (size_t tuple_index = 0; tuple_index < number_of_tuples; ++tuple_index)
     {
@@ -454,6 +533,17 @@ void sweep(
     free(left_counts.frequencies);
 }
 
+/**
+ * @brief Computes the frequencies of each label within a node's subset.
+ *
+ * Iterates through the indices associated with the current node and 
+ * counts how many times each encoded label appears. Useful for determining 
+ * the majority label of a leaf node or calculating Gini impurity.
+ *
+ * @param dataset Pointer to the complete Dataset.
+ * @param node Pointer to the Node to analyze.
+ * @return A pointer to a LabelFrequencies struct, or NULL on allocation failure.
+ */
 LabelFrequencies *get_label_frequencies(Dataset *dataset, Node *node)
 {
     // Build an array with encoded label frequencies
@@ -516,12 +606,33 @@ void merge_sort(Tuple *tuples, size_t size)
     // and replace the qsort in train_node()
 }
 
+/**
+ * @brief Computes the frequencies of each label within a node's subset.
+ *
+ * Iterates through the indices associated with the current node and 
+ * counts how many times each encoded label appears. Useful for determining 
+ * the majority label of a leaf node or calculating Gini impurity.
+ *
+ * @param dataset Pointer to the complete Dataset.
+ * @param node Pointer to the Node to analyze.
+ * @return A pointer to a LabelFrequencies struct, or NULL on allocation failure.
+ */
 int compare_tuple(const void *a, const void *b)
 {
     double diff = ((Tuple*)a)->value - ((Tuple*)b)->value;
     return (diff > 0) - (diff < 0);
 }
 
+/**
+ * @brief Checks if the current node meets the stopping criteria.
+ *
+ * A node stops splitting if it is already pure (a leaf), if it contains
+ * fewer samples than the configured minimum, or if the maximum tree 
+ * depth has been reached.
+ *
+ * @param node Pointer to the Node to check.
+ * @return true if the node should stop splitting, false otherwise.
+ */
 bool should_stop_splitting(Node *node)
 {
     return (
@@ -531,25 +642,36 @@ bool should_stop_splitting(Node *node)
     );
 }
 
+/**
+ * @brief Recursively trains the decision tree node.
+ *
+ * Determines the majority label, checks stopping constraints, and evaluates
+ * all features to find the optimal split point using Gini impurity. 
+ * Partitions the data and recursively trains the left and right child nodes.
+ *
+ * @param dataset Pointer to the complete Dataset.
+ * @param root Pointer to the current Node being trained.
+ * @return SUCCESS if training completes, FAILURE on memory allocation error.
+ */
 int train_node(Dataset *dataset, Node *root)
 {
     // Build an array with encoded label frequencies
     LabelFrequencies *lf = get_label_frequencies(dataset, root);
-    if (lf == NULL)
-    {
-        return FAILURE;
-    }
+    if (lf == NULL) return FAILURE;
     
     // Find the majority label & number of non-zero labels
     size_t majority_encoded_label = 0;
     size_t max_frequency = 0;
     size_t non_zero_labels = 0;
+
     if (global_args.debug) printf("[train_node] Looping through the label frequencies\n"); // Debugging
+
     for (size_t frequency_index = 0; frequency_index < lf->size; ++frequency_index)
     {
         if (global_args.debug) printf("[train_node] [encoded label: %zu] [frequency: %zu]\n",
             frequency_index, lf->frequencies[frequency_index]
         ); // Debugging
+
         if (lf->frequencies[frequency_index] > 0)
         {
             ++non_zero_labels;
@@ -562,7 +684,7 @@ int train_node(Dataset *dataset, Node *root)
         }
     }
     root->majority_encoded_label = majority_encoded_label;
-    root->is_leaf = (non_zero_labels == 1);
+    root->is_leaf = (non_zero_labels <= 1);
     if (global_args.debug) printf("[train_node] Node is %sa leaf\n", (root->is_leaf) ? "" : "not "); // Debugging
     
     // Free LabelFrequencies allocated memory
@@ -589,7 +711,7 @@ int train_node(Dataset *dataset, Node *root)
             return FAILURE;
         }
         //merge_sort(tuples, root->number_of_indices);
-        // instead of merge_sort for now:
+        // until merge_sort is implemented, using qsort
         qsort(tuples, root->number_of_indices, sizeof(Tuple), compare_tuple);
 
         double out_threshold = 0;
@@ -610,6 +732,14 @@ int train_node(Dataset *dataset, Node *root)
         }
         free(tuples);
     }
+
+    // For safety, if no valid split was found across all features (e.g.: identical values), force leaf.
+    if (best_gini == (double)INFINITY)
+    {
+        root->is_leaf = true;
+        return SUCCESS;
+    }
+
     root->feature_index = best_feature_index;
     root->threshold = best_threshold;
 
@@ -620,6 +750,7 @@ int train_node(Dataset *dataset, Node *root)
         fprintf(stderr, "[train_node] Failed to allocate memory for node left and initialize all members to 0\n");
         return FAILURE;
     }
+
     Node *right = (Node*)calloc(1, sizeof(Node));
     if (right == NULL)
     {
@@ -639,8 +770,9 @@ int train_node(Dataset *dataset, Node *root)
         free(right);
         return FAILURE;
     }
+
     right->indices = (size_t*)malloc(sizeof(size_t) * root->number_of_indices);
-    if (left->indices == NULL)
+    if (right->indices == NULL)
     {
         fprintf(stderr, "[train_node] Failed to allocate memory for node right's indices\n");
         free(left->indices);
@@ -657,9 +789,32 @@ int train_node(Dataset *dataset, Node *root)
         Node *selected = (sample->features[root->feature_index] <= root->threshold) ? left : right;
         selected->indices[selected->number_of_indices++] = root_sample_index;
     }
-    // todo: verify these 2 reallocs (I'm too tired right now...)
-    left->indices = realloc(left->indices, sizeof(size_t) * left->number_of_indices);
-    right->indices = realloc(right->indices, sizeof(size_t) * right->number_of_indices);
+
+    // Check and shrink left indices array
+    size_t *temp_left = realloc(left->indices, sizeof(size_t) * left->number_of_indices);
+    if (temp_left == NULL)
+    {
+        fprintf(stderr, "[train_node] Out of memory when re-allocating for left->indices\n");
+        free(left->indices);
+        free(right->indices);
+        free(left);
+        free(right);
+        return FAILURE;
+    }
+    left->indices = temp_left;
+    
+    // Check and shrink right indices array
+    size_t *temp_right = realloc(right->indices, sizeof(size_t) * right->number_of_indices);
+    if (temp_right == NULL)
+    {
+        fprintf(stderr, "[train_node] Out of memory when re-allocating for right->indices\n");
+        free(left->indices); // Already safely reallocated/updated above
+        free(right->indices);
+        free(left);
+        free(right);
+        return FAILURE;
+    }
+    right->indices = temp_right;
     
     // Let's not forget to assign the child nodes to their parent node too :)
     root->left = left;
@@ -674,12 +829,21 @@ int train_node(Dataset *dataset, Node *root)
     );
 
     // Call train_node on both child nodes
-    train_node(dataset, left);
-    train_node(dataset, right);
+    if (train_node(dataset, left) == FAILURE || train_node(dataset, right) == FAILURE)
+    {
+        return FAILURE; // propagate failure up the tree
+    }
 
     return SUCCESS;
 }
 
+/**
+ * @brief Prints the structure and features of the decision tree to stdout.
+ *
+ * Used for debugging and inspecting the learned model architecture.
+ *
+ * @param node Pointer to the current Node being printed.
+ */
 void output_tree_info(Dataset *dataset, Node *node)
 {
     if (node == NULL) return;
@@ -704,7 +868,15 @@ void output_tree_info(Dataset *dataset, Node *node)
     }
 }
 
-// Unused but I like recursive B)
+/**
+ * @brief Predicts the label for a single sample recursively.
+ * 
+ * Unused, but I like recursive B)
+ *
+ * @param node Pointer to the current Node.
+ * @param sample Pointer to the Sample to predict.
+ * @return The encoded label (size_t) predicted for the sample.
+ */
 size_t recursively_predict_sample(const Node *node, const Sample *sample)
 {
     if (node->is_leaf) return node->majority_encoded_label;
@@ -714,6 +886,17 @@ size_t recursively_predict_sample(const Node *node, const Sample *sample)
     return recursively_predict_sample(node->right, sample);
 }
 
+/**
+ * @brief Predicts the label for a single sample iteratively.
+ *
+ * Traverses the decision tree from the root down to a leaf node by comparing
+ * the sample's feature values against the trained thresholds. Iterative traversal
+ * prevents stack overflow on very deep trees.
+ *
+ * @param node Pointer to the root Node of the decision tree.
+ * @param sample Pointer to the Sample to predict.
+ * @return The encoded label (size_t) predicted for the sample.
+ */
 size_t predict_sample(const Node *node, const Sample *sample)
 {
     while(!node->is_leaf)
@@ -722,6 +905,14 @@ size_t predict_sample(const Node *node, const Sample *sample)
     return node->majority_encoded_label;
 }
 
+/**
+ * @brief Predicts labels for all samples in a dataset and optionally saves them.
+ *
+ * @param dataset The original training dataset (used for decoding labels).
+ * @param root Pointer to the root Node of the trained decision tree.
+ * @param pred_dataset The dataset containing unlabeled samples to predict.
+ * @return SUCCESS if completed, FAILURE if the output file cannot be opened.
+ */
 int predict_samples_in_dataset(const Dataset *dataset, const Node *root, const Dataset *pred_dataset)
 {
     FILE *out = NULL;
@@ -752,6 +943,16 @@ int predict_samples_in_dataset(const Dataset *dataset, const Node *root, const D
     return SUCCESS;
 }
 
+/**
+ * @brief Collects pointers to all nodes in the tree into a flat array.
+ *
+ * Performs a pre-order traversal to populate the array, ensuring that
+ * nodes are indexed consistently for serialization.
+ *
+ * @param node Pointer to the current Node being visited.
+ * @param nodes Array to store the node pointers.
+ * @param index Pointer to the current index in the array.
+ */
 void collect_all_nodes(Node *node, Node **collection, size_t *index)
 {
     // NULL instead of checking is_leaf because parents are NOT leaves but still need to be assigned an index
@@ -765,11 +966,27 @@ void collect_all_nodes(Node *node, Node **collection, size_t *index)
     collect_all_nodes(node->right, collection, index);
 }
 
+/**
+ * @brief Recursively traverses the tree to count all nodes.
+ *
+ * @param node Pointer to the current Node to count.
+ * @return The total number of nodes in the subtree starting at this node.
+ */
 size_t total_nodes(Node *node)
 {
     return (node->is_leaf) ? 1 : 1 + total_nodes(node->left) + total_nodes(node->right);
 }
 
+/**
+ * @brief Saves the trained decision tree to a binary file.
+ *
+ * Serializes the dataset metadata (features, labels) and flattens the 
+ * decision tree into an array using pre-order traversal for binary storage.
+ *
+ * @param model Pointer to the DecisionTree to save.
+ * @param path The file path where the model will be saved.
+ * @return SUCCESS if saved properly, FAILURE on file or memory errors.
+ */
 int save_model(const DecisionTree *model, const char *path)
 {
     if (global_args.debug) printf("[save_model] Saving model as: %s\n", path);
@@ -861,6 +1078,16 @@ int save_model(const DecisionTree *model, const char *path)
     return SUCCESS;
 }
 
+/**
+ * @brief Loads a trained decision tree from a binary file.
+ *
+ * Deserializes the file, verifies the version magic number, reconstructs 
+ * the dataset metadata, and rebuilds the tree pointers from the flattened 
+ * array of node indices.
+ *
+ * @param path The file path to load the model from.
+ * @return Pointer to the allocated DecisionTree, or NULL on failure/corruption.
+ */
 DecisionTree *load_model(const char *path)
 {
     if (global_args.debug) printf("[load_model] Loading model from: %s\n", path);
@@ -1024,17 +1251,39 @@ DecisionTree *load_model(const char *path)
 
             if (left_index != -1)
             {
+                // Safety bounds check
+                if (left_index >= nodes_count || left_index < 0)
+                {
+                    fprintf(stderr, "[load_model] Corrupted file: left_index out of bounds\n");
+                    free(disk_nodes);
+                    free(collection);
+                    free_dataset(model->dataset);
+                    free(model);
+                    fclose(model_file);
+                    return NULL;
+                }
                 collection[node_index]->left = collection[left_index];
                 collection[node_index]->left->depth = collection[node_index]->depth + 1;
             }
             if (right_index != -1)
             {
+                // Safety bounds check
+                if (right_index >= nodes_count || right_index < 0)
+                {
+                    fprintf(stderr, "[load_model] Corrupted file: right_index out of bounds\n");
+                    free(disk_nodes);
+                    free(collection);
+                    free_dataset(model->dataset);
+                    free(model);
+                    fclose(model_file);
+                    return NULL;
+                }
                 collection[node_index]->right = collection[right_index];
                 collection[node_index]->right->depth = collection[node_index]->depth + 1;
             }
         }
         if (global_args.debug) printf("[load_model] Tree built successfully\n");
-        if (global_args.debug) printf("[load_model] Setting the the node with index 0 as root\n");
+        if (global_args.debug) printf("[load_model] Setting the node with index 0 as root\n");
         model->root = collection[0]; // pre-order so root is index 0
         if (global_args.debug) printf("[load_model] Done\n");
 
@@ -1054,6 +1303,14 @@ DecisionTree *load_model(const char *path)
     return NULL;
 }
 
+/**
+ * @brief Prints example command-line usage to stdout.
+ *
+ * Provides concrete examples of how to invoke the program with various
+ * datasets and configuration parameters.
+ *
+ * @param program_name The name of the binary being executed.
+ */
 void print_usage_examples(const char* program_name)
 {
     printf("=== %s Usage Examples ===\n", program_name);
@@ -1093,6 +1350,11 @@ void print_usage_examples(const char* program_name)
     printf("- Combine multiple options as needed (e.g., training + testing + save).\n");
 }
 
+/**
+ * @brief Prints the full help documentation and usage instructions.
+ * 
+ * @param program_name The name of the binary being executed.
+ */
 void print_usage(const char *program_name)
 {
     printf("Usage: %s [options]\n", program_name);
@@ -1114,6 +1376,15 @@ void print_usage(const char *program_name)
     printf("  help                          Usage and options menu (this command)\n");
 }
 
+/**
+ * @brief Parses all the arguments passed.
+ * 
+ * @param argc The number of arguments (including the program's name).
+ * @param argv An array of strings containing all the arguments.
+ *
+ * @return An Args struct containg all the correct parameters  
+ * for the program to function correctly.
+ */
 Args parse_args(int argc, char **argv)
 {
     Args args;
