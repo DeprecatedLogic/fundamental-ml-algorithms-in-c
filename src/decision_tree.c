@@ -122,6 +122,12 @@ typedef struct
 } Args;
 Args global_args;
 
+/**
+ * @brief Frees a `Dataset` object.
+ *
+ * @param dataset A pointer to a `Dataset` object  
+ * containing two arrays, for samples and labels.
+ */
 void free_dataset(Dataset *dataset)
 {
     if (dataset == NULL)
@@ -229,13 +235,16 @@ int encode_label(Dataset *dataset, char *label, size_t *out_label_index)
     if (label_index == dataset->number_of_labels)
     {
         char **temp_labels = realloc(dataset->labels, sizeof(char*) * (dataset->number_of_labels + 1));
-        if (dataset->labels == NULL)
+        if (temp_labels == NULL)
         {
             fprintf(stderr, "[encoded_label] Failed to re-allocate memory for dataset->labels\n");
             return FAILURE;
         }
         dataset->labels = temp_labels;
-        dataset->labels[dataset->number_of_labels++] = strdup(label);
+        
+        char *copy = strdup(label);
+        if (copy == NULL) return FAILURE;
+        dataset->labels[dataset->number_of_labels++] = copy;
     }
     if (global_args.debug) printf("[encoded_label] label: '%s' (length: %zu)\n", label, strlen(label));
 
@@ -263,11 +272,23 @@ Dataset *read_data_from_file(
     char *token_delimiter, char decimals_delimiter, char *comment_delimiter
 )
 {
-    if (token_delimiter == NULL) strcpy(token_delimiter, " ");
-    if (comment_delimiter == NULL) strcpy(comment_delimiter, "#");
     if (strcmp(token_delimiter, comment_delimiter) == 0)
     {
-        fprintf(stderr, "[read_data_from_file] An error occured, the delimiter cannot be `%s`\n", comment_delimiter);
+        fprintf(
+            stderr,
+            "[read_data_from_file] An error occured, token and comment delimiters cannot be the same (Token:%s | Comment:%s)\n",
+            token_delimiter,
+            comment_delimiter
+        );
+        return NULL;
+    }
+    if (token_delimiter[0] == decimals_delimiter || comment_delimiter[0] == decimals_delimiter)
+    {
+        fprintf(
+            stderr,
+            "[read_data_from_file] An error occured, token/comment delimiter cannot be the same as the decimals delimiter (%c)\n",
+            decimals_delimiter
+        );
         return NULL;
     }
 
@@ -287,8 +308,8 @@ Dataset *read_data_from_file(
     }
 
     /* Time to write some good quality code (lol) */
-
-    const size_t feature_max_digits = 40; // a max of 40 digits per feature should be enough (the maximum precision for double is 15 or 17 ?)
+    // todo: maybe think about adding args for these so that the user can simply run the program without modifying anything ?
+    const size_t feature_max_digits = 40; // a max of 40 digits (decimals delimiter included) per feature should be enough (the maximum precision for double is 15 or 17 ?)
     const size_t label_max_chars = 100; // a max of 100 chars available for the label, enough to go crazy with the labels
     const size_t line_size = (number_of_features * feature_max_digits) + label_max_chars + 1; // +1 for '\0'
     
@@ -297,10 +318,19 @@ Dataset *read_data_from_file(
     bool bom_checked = false;
     while(fgets(line, (int)(line_size), data_file))
     {
+        if (strchr(line, '\n') == NULL && !feof(data_file))
+        {
+            fprintf(stderr, "[read_data_from_file] Line %zu is too long\n", line_number);
+            free_dataset(dataset);
+            fclose(data_file);
+            return NULL;
+        }
+
         if (!bom_checked)
         {
             unsigned char *p_line = (unsigned char *)line;
-            if (p_line[0] == 0xEF && p_line[1] == 0xBB && p_line[2] == 0xBF)
+
+            if (strlen(line) >= 3 && p_line[0] == 0xEF && p_line[1] == 0xBB && p_line[2] == 0xBF)
                 memmove(line, line + 3, strlen(line + 3) + 1);
             
             bom_checked = true;
@@ -308,17 +338,31 @@ Dataset *read_data_from_file(
         
         if (strncmp(line, comment_delimiter, strlen(comment_delimiter)) == 0)
         {
-            if (global_args.debug) printf("[read_data_from_file] Line %zu skipped (fully commented line)\n", line_number++);
+            if (global_args.debug) printf("[read_data_from_file] Line %zu skipped (fully commented line)\n", line_number);
+            ++line_number;
             continue;
         }
 
         char *uncommented_line = strtok(line, comment_delimiter);
         
-        // Strip newline
-        uncommented_line[strcspn(uncommented_line, "\r\n")] = '\0';
-        if (uncommented_line == NULL || *uncommented_line == '\0')
+        // Empty line
+        if (uncommented_line == NULL)
         {
             if (global_args.debug) printf("[read_data_from_file] Line %zu skipped (empty line)\n", line_number);
+            ++line_number;
+            continue;
+        }
+        
+        // Strip newline
+        uncommented_line[strcspn(uncommented_line, "\r\n")] = '\0';
+
+        // Skip leading whitespace
+        while (*uncommented_line == ' ' || *uncommented_line == '\t') ++uncommented_line;
+
+        if (*uncommented_line == '\0')
+        {
+            if (global_args.debug) printf("[read_data_from_file] Line %zu skipped (whitespace-only line)\n", line_number);
+            ++line_number;
             continue;
         }
 
@@ -368,6 +412,11 @@ Dataset *read_data_from_file(
             {
                 if (encode_label(dataset, token_buffer, &sample.encoded_label) == FAILURE)
                 {
+                    fprintf(
+                        stderr,
+                        "[read_data_from_file] Encoutered a bad sample at line '%zu' (feature value is not a number ?)\n",
+                        line_number
+                    );
                     free_dataset(dataset);
                     free(sample.features);
                     fclose(data_file);
@@ -378,12 +427,14 @@ Dataset *read_data_from_file(
             token_buffer = strtok(NULL, token_delimiter);
             ++token_counter;
         }
-        if (token_counter-1 != number_of_features) // -1 because of the label
+
+        size_t features_counted = (is_labeled && token_counter > 0) ? token_counter - 1 : token_counter; // -1 because of the label
+        if (features_counted != number_of_features)
         {
             fprintf(
                 stderr,
                 "[read_data_from_file] Encountered a mismatch: features counted [%zu] != expected [%zu] (line %zu)\n",
-                token_counter-1,
+                features_counted,
                 number_of_features,
                 line_number
             );
@@ -393,7 +444,16 @@ Dataset *read_data_from_file(
             return NULL;
         }
 
-        dataset->samples = (Sample *)realloc(dataset->samples, sizeof(Sample) * (dataset->number_of_samples + 1));
+        Sample *temp_samples = (Sample *)realloc(dataset->samples, sizeof(Sample) * (dataset->number_of_samples + 1));
+        if (temp_samples == NULL)
+        {
+            free_dataset(dataset);
+            free(sample.features);
+            fclose(data_file);
+            return NULL;
+        }
+
+        dataset->samples = temp_samples;
         dataset->samples[dataset->number_of_samples] = sample;
         ++dataset->number_of_samples;
         

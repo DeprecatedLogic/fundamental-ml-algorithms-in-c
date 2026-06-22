@@ -65,7 +65,7 @@ Args global_args;
 typedef struct
 {
     double *features; // Array of input features (x1, ..., xn)
-    int label; // The correctly guessed label (supervised learning)
+    size_t label; // The correctly guessed label (supervised learning)
 } Sample;
 
 
@@ -73,6 +73,9 @@ typedef struct
 {
     Sample *samples;
     size_t number_of_samples;
+
+    char **labels;
+    size_t number_of_labels;
 }
 Dataset;
 
@@ -84,13 +87,16 @@ typedef struct
     size_t number_of_features; // All samples have the same number of features (== size of the arrays too)
     double *mean;
     double *standard_deviation;
+    char **labels;
+    size_t number_of_labels;
 }
 Perceptron;
 
 /**
  * @brief Frees a `Dataset` object.
  *
- * @param dataset A pointer to a `Dataset` object containing the array of samples and its count.
+ * @param dataset A pointer to a `Dataset` object  
+ * containing two arrays, for samples and labels.
  */
 void free_dataset(Dataset *dataset)
 {
@@ -110,6 +116,16 @@ void free_dataset(Dataset *dataset)
         free(dataset->samples);
     }
 
+    if (dataset->labels != NULL)
+    {
+        for (size_t label_index = 0; label_index < dataset->number_of_labels; ++label_index)
+        {
+            if (dataset->labels[label_index] != NULL)
+                free(dataset->labels[label_index]);
+        }
+        free(dataset->labels);
+    }
+
     free(dataset);
     if (global_args.debug) printf("[free_dataset] Dataset freed\n"); // Debugging
 }
@@ -126,10 +142,30 @@ void free_perceptron(Perceptron *perceptron)
     if (perceptron->standard_deviation != NULL) free(perceptron->standard_deviation);
     if (perceptron->weights != NULL) free(perceptron->weights);
     
+    if (perceptron->labels != NULL)
+    {
+        for (size_t i = 0; i < perceptron->number_of_labels; ++i)
+        {
+            if (perceptron->labels[i] != NULL)
+                free(perceptron->labels[i]);
+        }
+        free(perceptron->labels);
+    }
+
     free(perceptron);
     if (global_args.debug) printf("[free_perceptron] Perceptron freed\n");
 }
 
+/**
+ * @brief Checks if a given string represents a valid number.
+ *
+ * Uses a Look-Up Table (LUT) for fast digit validation. Handles
+ * negative signs and a custom decimal delimiter.
+ *
+ * @param number The null-terminated string to check.
+ * @param decimals_delimiter The character used as the decimal separator.
+ * @return true if the string is a valid number, false otherwise.
+ */
 bool is_number(char *number, char decimals_delimiter)
 {
     if (global_args.debug) fprintf(
@@ -192,33 +228,83 @@ bool is_number(char *number, char decimals_delimiter)
 }
 
 /**
- * @brief Reads data from a specific file.
+ * @brief Encodes a string label into a size_t index.
  *
- * My hard working char-by-char method.
- * Even God is confused how this function works.
+ * If the label doesn't exist in the dataset, it dynamically adds it
+ * to the dataset's labels array.
  *
- * @attention It assumes that if the number of features are N,
+ * @param dataset A pointer to the Dataset object.
+ * @param label The string label to encode.
+ * @param out_label_index Pointer to store the resulting encoded label index.
+ * @return SUCCESS if successful, FAILURE on memory allocation error.
+ */
+int encode_label(Dataset *dataset, char *label, size_t *out_label_index)
+{
+    size_t label_index = 0;
+    while (label_index < dataset->number_of_labels && strcmp(dataset->labels[label_index], label) != 0)
+    {
+        ++label_index;
+    }
+    
+    if (label_index == dataset->number_of_labels)
+    {
+        char **temp_labels = realloc(dataset->labels, sizeof(char*) * (dataset->number_of_labels + 1));
+        if (temp_labels == NULL)
+        {
+            fprintf(stderr, "[encoded_label] Failed to re-allocate memory for dataset->labels\n");
+            return FAILURE;
+        }
+        dataset->labels = temp_labels;
+
+        char *copy = strdup(label);
+        if (copy == NULL) return FAILURE;
+        dataset->labels[dataset->number_of_labels++] = copy;
+    }
+    if (global_args.debug) printf("[encoded_label] label: '%s' (length: %zu)\n", label, strlen(label));
+
+    *out_label_index = label_index;
+    return SUCCESS;
+}
+
+/**
+ * @brief Reads sample data from a delimited text file and constructs a Dataset.
  *
- * there are N+1 separate values (label included) per line.
+ * Parses a file line by line, skipping comments and empty lines. It handles BOM 
+ * stripping, tokenizes the features using the provided delimiter, and encodes 
+ * the label if the dataset is supervised.
  *
- * For example, for number_of_features = 2, a line would be "feature1 feature2 label".
- *
- * @param file_name The name of the file to read.
- * @param number_of_features The number of features.
- * @param is_labeled If samples/rows are labeled.
- *
- * @returns A pointer to a `Dataset` object containing the samples and its size.
+ * @param file_path The path to the dataset file.
+ * @param number_of_features The expected number of features per sample.
+ * @param is_labeled Boolean indicating if the last token on each line is a label.
+ * @param token_delimiter The string used to separate features/labels.
+ * @param decimals_delimiter The character used for decimals in floating-point numbers.
+ * @param comment_delimiter The string that marks the start of a comment.
+ * @return A pointer to the allocated Dataset, or NULL if an error occurs.
  */
 Dataset *read_data_from_file(
     const char *file_path, size_t number_of_features, bool is_labeled,
     char *token_delimiter, char decimals_delimiter, char *comment_delimiter
 )
 {
-    if (token_delimiter == NULL) strcpy(token_delimiter, " ");
-    if (comment_delimiter == NULL) strcpy(comment_delimiter, "#");
+    if (global_args.debug) printf("[read_data_from_file] Reading data from file: %s\n", file_path);
+
     if (strcmp(token_delimiter, comment_delimiter) == 0)
     {
-        fprintf(stderr, "[read_data_from_file] An error occured, the delimiter cannot be `%s`\n", comment_delimiter);
+        fprintf(
+            stderr,
+            "[read_data_from_file] An error occured, token and comment delimiters cannot be the same (Token:%s | Comment:%s)\n",
+            token_delimiter,
+            comment_delimiter
+        );
+        return NULL;
+    }
+    if (token_delimiter[0] == decimals_delimiter || comment_delimiter[0] == decimals_delimiter)
+    {
+        fprintf(
+            stderr,
+            "[read_data_from_file] An error occured, token/comment delimiter cannot be the same as the decimals delimiter (%c)\n",
+            decimals_delimiter
+        );
         return NULL;
     }
 
@@ -232,7 +318,7 @@ Dataset *read_data_from_file(
     Dataset *dataset = (Dataset *)calloc(1, sizeof(Dataset));
     if (dataset == NULL)
     {
-        perror("[read_data_from_file] Failed to allocate memory for dataset\n");
+        perror("[read_data_from_file] Failed to allocate memory for dataset");
         fclose(data_file);
         return NULL;
     }
@@ -246,10 +332,19 @@ Dataset *read_data_from_file(
     bool bom_checked = false;
     while(fgets(line, (int)(line_size), data_file))
     {
+        if (strchr(line, '\n') == NULL && !feof(data_file))
+        {
+            fprintf(stderr, "[read_data_from_file] Line %zu is too long\n", line_number);
+            free_dataset(dataset);
+            fclose(data_file);
+            return NULL;
+        }
+
         if (!bom_checked)
         {
             unsigned char *p_line = (unsigned char *)line;
-            if (p_line[0] == 0xEF && p_line[1] == 0xBB && p_line[2] == 0xBF)
+            
+            if (strlen(line) >= 3 && p_line[0] == 0xEF && p_line[1] == 0xBB && p_line[2] == 0xBF)
                 memmove(line, line + 3, strlen(line + 3) + 1);
             
             bom_checked = true;
@@ -257,17 +352,31 @@ Dataset *read_data_from_file(
 
         if (strncmp(line, comment_delimiter, strlen(comment_delimiter)) == 0)
         {
-            if (global_args.debug) printf("[read_data_from_file] Line %zu skipped (fully commented line)\n", line_number++);
+            if (global_args.debug) printf("[read_data_from_file] Line %zu skipped (fully commented line)\n", line_number);
+            ++line_number;
             continue;
         }
 
         char *uncommented_line = strtok(line, comment_delimiter);
         
-        // Strip newline
-        uncommented_line[strcspn(uncommented_line, "\r\n")] = '\0';
-        if (uncommented_line == NULL || *uncommented_line == '\0')
+        // Empty line
+        if (uncommented_line == NULL)
         {
             if (global_args.debug) printf("[read_data_from_file] Line %zu skipped (empty line)\n", line_number);
+            ++line_number;
+            continue;
+        }
+        
+        // Strip newline
+        uncommented_line[strcspn(uncommented_line, "\r\n")] = '\0';
+
+        // Skip leading whitespace
+        while (*uncommented_line == ' ' || *uncommented_line == '\t') ++uncommented_line;
+
+        if (*uncommented_line == '\0')
+        {
+            if (global_args.debug) printf("[read_data_from_file] Line %zu skipped (whitespace-only line)\n", line_number);
+            ++line_number;
             continue;
         }
 
@@ -282,7 +391,7 @@ Dataset *read_data_from_file(
         };
         if (sample.features == NULL)
         {
-            perror("[read_data_from_file] Failed to allocate memory for sample.features\n");
+            fprintf(stderr, "[read_data_from_file] Failed to allocate memory for sample.features\n");
             free_dataset(dataset);
             fclose(data_file);
             return NULL;
@@ -296,11 +405,6 @@ Dataset *read_data_from_file(
             // If true, we can stop here but we won't be able to find the exact number of features the sample has
             // which requires the user to check by themself
             //if (token_counter > number_of_features) break; // encountered bad line format probably; 
-
-            // There is duplicate code inside the if & else-if blocks because
-            // we cannot check if it's a number first and then the rest.
-            // If the dataset is not labeled, there's no need to check if the label is a number
-            // (there's probably a better way of writing this part...)
 
             if (current_number_of_features < number_of_features)
             {
@@ -321,7 +425,7 @@ Dataset *read_data_from_file(
             }
             else if (is_labeled)
             {
-                if (!is_number(token_buffer, decimals_delimiter)) // label is not a number
+                if (encode_label(dataset, token_buffer, &sample.label) == FAILURE)
                 {
                     fprintf(
                         stderr,
@@ -333,18 +437,20 @@ Dataset *read_data_from_file(
                     fclose(data_file);
                     return NULL;
                 }
-                sample.label = atoi(token_buffer);
             }
 
             token_buffer = strtok(NULL, token_delimiter);
             ++token_counter;
         }
-        if (token_counter-1 != number_of_features) // -1 because of the label
+
+        size_t features_counted = (is_labeled && token_counter > 0) ? token_counter - 1 : token_counter; // -1 because of the label
+        if (features_counted != number_of_features)
         {
+
             fprintf(
                 stderr,
                 "[read_data_from_file] Encountered a mismatch: features counted [%zu] != expected [%zu] (line %zu)\n",
-                token_counter-1,
+                features_counted,
                 number_of_features,
                 line_number
             );
@@ -354,7 +460,16 @@ Dataset *read_data_from_file(
             return NULL;
         }
 
-        dataset->samples = (Sample *)realloc(dataset->samples, sizeof(Sample) * (dataset->number_of_samples + 1));
+        Sample* temp_samples = (Sample *)realloc(dataset->samples, sizeof(Sample) * (dataset->number_of_samples + 1));
+        if (temp_samples == NULL)
+        {
+            free_dataset(dataset);
+            free(sample.features);
+            fclose(data_file);
+            return NULL;
+        }
+
+        dataset->samples = temp_samples;
         dataset->samples[dataset->number_of_samples] = sample;
         ++dataset->number_of_samples;
         
@@ -399,9 +514,17 @@ int save_model(const char *file_path, const Perceptron *perceptron)
     fwrite(&perceptron->learning_rate, sizeof(double), 1, file);
 
     // Write standardization parameters
-    // We save the arrays so the model is actually "complete"
     fwrite(perceptron->mean, sizeof(double), perceptron->number_of_features, file);
     fwrite(perceptron->standard_deviation, sizeof(double), perceptron->number_of_features, file);
+
+    // Write labels
+    fwrite(&perceptron->number_of_labels, sizeof(size_t), 1, file);
+    for (size_t iLabel = 0; iLabel < perceptron->number_of_labels; ++iLabel)
+    {
+        size_t label_length = strlen(perceptron->labels[iLabel]);
+        fwrite(&label_length, sizeof(size_t), 1, file);
+        fwrite(perceptron->labels[iLabel], sizeof(char), label_length, file);
+    }
 
     if (global_args.debug) printf("[save_model] Binary model saved successfully.\n");
 
@@ -475,7 +598,7 @@ Perceptron *load_model(const char *file_path)
         goto error_cleanup;
     }
 
-    // Read standardization parameters (The "TODO" fix!)
+    // Read standardization parameters
     perceptron->mean = malloc(perceptron->number_of_features * sizeof(double));
     perceptron->standard_deviation = malloc(perceptron->number_of_features * sizeof(double));
     
@@ -484,6 +607,31 @@ Perceptron *load_model(const char *file_path)
     {
         fprintf(stderr, "[load_model] Failed to read mean or std deviation\n");
         goto error_cleanup;
+    }
+
+    // Read labels
+    if (fread(&perceptron->number_of_labels, sizeof(size_t), 1, file) != 1)
+    {
+        fprintf(stderr, "[load_model] Failed to read number of labels\n");
+        goto error_cleanup;
+    }
+    
+    if (perceptron->number_of_labels > 0)
+    {
+        perceptron->labels = malloc(sizeof(char*) * perceptron->number_of_labels);
+        if (perceptron->labels == NULL) goto error_cleanup;
+
+        for (size_t i = 0; i < perceptron->number_of_labels; ++i)
+        {
+            size_t len = 0;
+            if (fread(&len, sizeof(size_t), 1, file) != 1) goto error_cleanup;
+            
+            perceptron->labels[i] = malloc(len + 1);
+            if (perceptron->labels[i] == NULL) goto error_cleanup;
+            
+            if (fread(perceptron->labels[i], sizeof(char), len, file) != len) goto error_cleanup;
+            perceptron->labels[i][len] = '\0';
+        }
     }
 
     if (global_args.debug) printf("[load_model] Model loaded successfully from binary!\n");
@@ -567,7 +715,7 @@ void update_parameters(Perceptron *perceptron, const Sample *sample, int error)
  *
  * @returns `1` if output is bigger or equal to 0, otherwise `0`.
  */
-int compute_prediction(const Perceptron *perceptron, const Sample *sample)
+size_t compute_prediction(const Perceptron *perceptron, const Sample *sample)
 {
     double output = perceptron->bias;
     for (size_t i = 0; i < perceptron->number_of_features; ++i)
@@ -575,41 +723,6 @@ int compute_prediction(const Perceptron *perceptron, const Sample *sample)
         output += perceptron->weights[i] * sample->features[i];
     }
     return (output >= 0) ? 1 : 0;
-}
-
-/**
- * @brief Creates a perceptron sample out of user's input.
- *
- * @param number_of_features The number of features.
- *
- * @returns A pointer to a `Sample` object.
- */
-Sample *get_sample(size_t number_of_features)
-{
-    Sample *sample = (Sample*)malloc(sizeof(Sample));
-    if (sample == NULL)
-    {
-        perror("[get_sample] Failed to allocate memory for sample");
-        return NULL;
-    }
-
-    sample->features = (double*)malloc(number_of_features * sizeof(double));
-    if (sample->features == NULL)
-    {
-        perror("[get_sample] Failed to allocate memory for sample->features");
-        free(sample);
-        return NULL;
-    }
-
-    for (size_t feature_index = 0; feature_index < number_of_features; ++feature_index)
-    {
-        printf("Feature %zu: ", feature_index);
-        scanf("%lf", &sample->features[feature_index]);
-    }
-
-    printf("Label: ");
-    scanf("%d", &sample->label);
-    return sample;
 }
 
 /**
@@ -800,7 +913,7 @@ int apply_indexed_weights(Perceptron *perceptron)
             return FAILURE;
         }
 
-        perceptron->weights[index - 1] = value; // 1-based so we remove 1 to get the actual weight index
+        perceptron->weights[index - 1] = value; // starts at 1, so we remove 1 to get the actual weight index
     }
     
     return SUCCESS;
@@ -1027,7 +1140,7 @@ int main(int argc, char *argv[])
         printf("\n");
         printf("Bias: %g\n", global_args.bias);
         printf("Learning rate: %g\n", global_args.learning_rate);
-        printf("Episodes: %zu\n", global_args.epochs);
+        printf("Epochs: %zu\n", global_args.epochs);
         printf("Standardize: %s\n", global_args.standardize ? "true" : "false");
         printf("Save model path: %s\n",  global_args.save_model_path);
         printf("Load model path: %s\n",  global_args.load_model_path);
@@ -1138,12 +1251,16 @@ int main(int argc, char *argv[])
         for (size_t epoch = 0; epoch < global_args.epochs; ++epoch)
         {
             if (global_args.debug)
+            {
+                size_t label_index = train_dataset->samples[0].label;
                 printf(
-                    "Epoch %zu (first sample: label=%d pred=%d)\n",
+                    "Epoch %zu (first sample: enc_label=%zu label=%s pred=%zu)\n",
                     epoch,
-                    train_dataset->samples[0].label,
+                    label_index,
+                    train_dataset->labels[label_index],
                     compute_prediction(perceptron, &train_dataset->samples[0])
                 );
+            }
             
             for (size_t sample_index = 0; sample_index < train_dataset->number_of_samples; ++sample_index)
             {
@@ -1166,6 +1283,15 @@ int main(int argc, char *argv[])
 
         }
         printf("\nModel trained succesfully.\n");
+
+        // Transfer label mapping to the model
+        perceptron->number_of_labels = train_dataset->number_of_labels;
+        perceptron->labels = malloc(sizeof(char*) * train_dataset->number_of_labels);
+        for (size_t i = 0; i < train_dataset->number_of_labels; ++i)
+        {
+            perceptron->labels[i] = strdup(train_dataset->labels[i]);
+        }
+
         free_dataset(train_dataset);
     }
     else
@@ -1187,6 +1313,12 @@ int main(int argc, char *argv[])
             global_args.decimals_delimiter,
             global_args.comment_delimiter
         );
+        if (test_dataset == NULL)
+        {
+            free_perceptron(perceptron);
+            return EXIT_FAILURE;
+        }
+
         if (global_args.standardize)
         {
             if (standardize_data(test_dataset,perceptron->number_of_features,
@@ -1198,15 +1330,16 @@ int main(int argc, char *argv[])
             }
         }
 
+        printf("\nComputing predictions...\n");
         size_t correct_guesses = 0;
         for (size_t sample_index = 0; sample_index < test_dataset->number_of_samples; ++sample_index)
         {
             Sample *sample = &test_dataset->samples[sample_index];
-            int output = compute_prediction(perceptron, sample);
+            size_t output = compute_prediction(perceptron, sample);
             printf("Guessed %s\n", (output == sample->label) ? "correctly" : "incorrectly");
             correct_guesses += (output == sample->label) ? 1 : 0;
         }
-        printf("\nModel accuracy: %.2f%%\n", (float)correct_guesses / test_dataset->number_of_samples * 100);
+        printf("\nModel accuracy: %.2f%%\n\n", (float)correct_guesses / test_dataset->number_of_samples * 100);
 
         free_dataset(test_dataset);
     }
@@ -1222,8 +1355,15 @@ int main(int argc, char *argv[])
             global_args.decimals_delimiter,
             global_args.comment_delimiter
         );
+        if (unlabeled_dataset == NULL)
+        {
+            free_perceptron(perceptron);
+            return EXIT_FAILURE;
+        }
+
         // Deep copy dataset before standardizing to save samples with non-standardized features and their respective label, if needed
         Dataset *unlabeled_dataset_copy = NULL;
+
         if (global_args.standardize)
         {
             unlabeled_dataset_copy = deep_copy_dataset(unlabeled_dataset, perceptron->number_of_features);
@@ -1246,7 +1386,12 @@ int main(int argc, char *argv[])
         {
             Sample *sample = &unlabeled_dataset->samples[sample_index];
             sample->label = compute_prediction(perceptron, sample); // sample is unlabeled so the only label is what the algorithm predicts
-            printf("Guessed %d\n", sample->label);
+            
+            if (sample->label < perceptron->number_of_labels) // weird if this wouldn't be true...
+                printf("Guessed %zu (%s)\n", sample->label, perceptron->labels[sample->label]);
+            else
+                printf("Guessed %zu\n", sample->label);
+            
         }
 
         if (strcmp(global_args.prediction_output_path, "") != 0) // Save
@@ -1268,8 +1413,16 @@ int main(int argc, char *argv[])
             {
                 for (size_t feature_index = 0; feature_index < perceptron->number_of_features; ++feature_index)
                     fprintf(file, "%g ", temp_unlabeled_dataset->samples[sample_index].features[feature_index]);
-
-                fprintf(file, "%d\n", unlabeled_dataset->samples[sample_index].label);
+                
+                if (unlabeled_dataset->samples[sample_index].label < perceptron->number_of_labels)
+                    fprintf(
+                file,
+                "%zu (%s)\n",
+                        unlabeled_dataset->samples[sample_index].label,
+                        perceptron->labels[unlabeled_dataset->samples[sample_index].label]
+                    );
+                else
+                    fprintf(file, "%zu\n", unlabeled_dataset->samples[sample_index].label);
             }
             fclose(file);
             printf("\nResults saved to file.\n");
