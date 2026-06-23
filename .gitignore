@@ -4,3 +4,4 @@ builds/
 models/
 *.bak
 *output*
+vgcore*

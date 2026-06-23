@@ -387,7 +387,7 @@ Dataset *read_data_from_file(
         
         Sample sample = {
             .features = (double *)malloc(sizeof(double) * number_of_features),
-            .label = -1
+            .label = 0
         };
         if (sample.features == NULL)
         {
@@ -463,6 +463,7 @@ Dataset *read_data_from_file(
         Sample* temp_samples = (Sample *)realloc(dataset->samples, sizeof(Sample) * (dataset->number_of_samples + 1));
         if (temp_samples == NULL)
         {
+            fprintf(stderr, "[read_data_from_file] Failed to re-allocate memory for temp_samples\n");
             free_dataset(dataset);
             free(sample.features);
             fclose(data_file);
@@ -985,7 +986,7 @@ void print_usage(const char *program_name)
     printf("Options:\n");
     printf("  -f <string>           Dataset file path\n");
     printf("  -a <string>           Labeled dataset used to test accuracy\n");
-    printf("  -p <string>           Unlabeled dataset file path containing the samples to predict\n");
+    printf("  -p <string>           Unlabeled dataset containing the samples to predict\n");
     printf("  -o <string>           Save output file containing samples with predicted labels\n");
     printf("  -n <integer>          Number of features per sample (default: 1)\n");
     printf("  -w <string>           Initial weight values (random if unset)\n");
@@ -1382,6 +1383,8 @@ int main(int argc, char *argv[])
             }
         }
 
+        printf("\nComputing predictions...\n");
+
         for (size_t sample_index = 0; sample_index < unlabeled_dataset->number_of_samples; ++sample_index)
         {
             Sample *sample = &unlabeled_dataset->samples[sample_index];
@@ -1391,7 +1394,6 @@ int main(int argc, char *argv[])
                 printf("Guessed %zu (%s)\n", sample->label, perceptron->labels[sample->label]);
             else
                 printf("Guessed %zu\n", sample->label);
-            
         }
 
         if (strcmp(global_args.prediction_output_path, "") != 0) // Save
@@ -1425,9 +1427,9 @@ int main(int argc, char *argv[])
                     fprintf(file, "%zu\n", unlabeled_dataset->samples[sample_index].label);
             }
             fclose(file);
-            printf("\nResults saved to file.\n");
+            printf("\nResults saved to file.\n\n");
         }
-        else printf("\nResults were discarded.\n");
+        else printf("\nResults were discarded.\n\n");
 
         free_dataset(unlabeled_dataset);
         free_dataset(unlabeled_dataset_copy);
@@ -1437,9 +1439,9 @@ int main(int argc, char *argv[])
     if (strcmp(global_args.save_model_path, "") != 0)
     {
         if (save_model(global_args.save_model_path, perceptron) == SUCCESS)
-            printf("\nModel saved succesfully.\n");
+            printf("\nModel saved succesfully.\n\n");
         else
-            printf("\nFailed to save model.\n");
+            printf("\nFailed to save model.\n\n");
     }
 
     if (global_args.output_parameters) output_parameters(perceptron);
