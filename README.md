@@ -1,78 +1,48 @@
-## Fundamental Machine Learning Algorithms in C
+# Fundamental ML Algorithms from Scratch (in C)
+A personal repository dedicated to building machine learning algorithms from the ground up. No external ML libraries, no high-level abstractions, just raw C, manual memory management, and the occasional battle with pointers.
 
-This project implements three core machine learning algorithms from scratch in C:
+## Why?
+This repository started as a requirement for my first-year Bachelor’s studies in Artificial Intelligence.  
+While the assignment asked for basic implementations of three core algorithms (KNN, K-Means, and Perceptron), I found myself wanting to understand the mechanics at a deeper level.  
+I decided to start from zero to build something dynamic, robust, and entirely under my own control.  
 
-* **K-Nearest Neighbors (KNN)**
-* **K-Means Clustering**
-* **Perceptron (Binary Classification)**
+This project is a practical deep-dive into the "black box" of AI, proving that you don't need heavy frameworks to implement intelligent behavior, just C and a lot of **patience**.
 
-This repository contains my personal implementations of various machine learning algorithms, built from scratch in C.
-The goal is to deeply understand the underlying mechanics of these algorithms.
+## The Algorithms
+* **KNN**: A lazy learner that classifies data based on proximity.
+* **K-Means**: An unsupervised clustering algorithm that supports automatic K detection via the Elbow Method.
+* **Perceptron**: A binary classifier powered by the perceptron update rule, complete with model saving/loading and adjustable learning rates.
+* **Decision Tree**: A hierarchical classifier featuring custom file parsing, binary serialization, and console-based tree visualization.  
 
----
+## How to Run
+Everything is built for a standard C environment.
 
-### How to Run ?
-
-Replace *knn* with the desired algorithm (*kmeans* or *perceptron*):
-
+Clone and navigate to `/src`:
 ```bash
-git clone https://github.com/ItzKarizma/fundamental-ml-algorithms-in-c.git
-cd ./fundamental-ml-algorithms-in-c/knn
+git clone https://github.com/DeprecatedLogic/fundamental-ml-algorithms-in-c.git
+cd ./fundamental-ml-algorithms-in-c/src
+```
+
+Compile and run:
+```bash
+# Example for KNN
 gcc -lm knn.c -o knn
 ./knn
 ```
 
-Make sure you have a file with data (raw / not-standardized) and properly formatted.
-Data files should be space-separated, with features first and the label (if necessary) last on each line.
-Examples are already included in the repository, specifically in the *sample_data* folder.
+**Data Format:**
+* Space-separated values (configurable via command line).
+* Features first, label last (where applicable).
+* Check the `/datasets` folder for examples, the file parser is quite robust too.  
+
+## Technical Highlights
+Written in pure C, zero dependencies.  
+Manual memory management with extensive `valgrind` testing to ensure zero leaks.  
+To avoid hardcoded values, an argument parser was implemented so that you can fully configure the algorithms directly via the command line.  
+
+Includes Doxygen-style documentation and comments, primarily because I have a very short memory and I know future-me will love a reminder on what's going on!
 
 ---
 
-### KNN
-
-* Supervised algorithm for classification.
-* Takes user input for **features** and **K**.
-* Predicts based on the closest neighbors.
-* Handles invalid data robustly (as long as you don't try it).
-
----
-
-### K-Means
-
-* Unsupervised clustering algorithm.
-* Supports automatic **K** detection using the **Elbow Method**.
-* Handling of empty clusters is not entirely implemented but it's there (I'm lazy to finish this).
-* Highly configurable: thresholds, custom K, max K, etc.
-
----
-
-### Perceptron
-
-* Supervised binary classifier using the perceptron update rule.
-* Supports adjustable learning rate.
-* Supports saving and loading a model.
-
----
-
-### Features
-
-* Fully written in C with no external ML libraries.
-* Manual memory management (it's C after all).
-* Standardized input parsing.
-* Clear comments and docstrings (honestly, for future me in case one day I come back to this :P).
-
----
-
-### Why ?
-
-Built as a learning project to deeply understand how these algorithms work under the hood, not just to *use* machine learning, but to *build* it from scratch.
-
-This was originally required for my AI studies (1st year of a Bachelor's degree), where we were asked to implement parts of these algorithms. Just coding *some* functions wasn’t satisfying enough for me, so I decided to start completely from scratch and make everything more dynamic and to my own liking...
-
----
-
-### Author Notes
-
-Made with caffeine and occasional frustration by ItzKarizma.
-
-PS: I just hope there are no memory leaks, but that's a test for another time (if I'm still alive).
+## Author
+Made with caffeine, persistence, and occasional frustration by [DeprecatedLogic](https://github.com/DeprecatedLogic).

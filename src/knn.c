@@ -1,0 +1,1309 @@
+/*======================================================================
+ *  k-Nearest Neighbors (lazy learner; supervised)
+ *
+ *  Author      :  DeprecatedLogic  <https://www.github.com/DeprecatedLogic>
+ *  Created     :  25 Jun 2025
+ *
+ *  Description :
+ *      Reads N-dimensional samples from a text file (final token = label),
+ *      standardises the data in-place, returns the K nearest
+ *      neighbors for a query sample and outputs what the sample
+ *      was classified as.
+ *====================================================================*/
+
+#include <stddef.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <math.h>
+#include <stdbool.h>
+
+#define ANSI_COLOR_RED     "\x1b[31m"
+#define ANSI_COLOR_GREEN   "\x1b[32m"
+#define ANSI_COLOR_YELLOW  "\x1b[33m"
+#define ANSI_COLOR_BLUE    "\x1b[34m"
+#define ANSI_COLOR_MAGENTA "\x1b[35m"
+#define ANSI_COLOR_CYAN    "\x1b[36m"
+#define ANSI_COLOR_RESET   "\x1b[0m"
+#define CMD_PRINT(ANSI_COLOR, PROGRAM_NAME, ARGS) printf("~>%s %s %s %s\n", ANSI_COLOR, PROGRAM_NAME, ARGS, ANSI_COLOR_RESET)
+
+#define MAX_PATH 256
+#define MAX_DELIM 16
+#define SUCCESS 0
+#define FAILURE -1
+
+typedef struct
+{
+    double *features; // A pointer containing double values to keep the number of features dynamic
+    size_t encoded_label; // A label index (what it's classified as)
+}
+Sample;
+
+// Keep the array of samples and its size together
+typedef struct
+{
+    Sample *samples;
+    size_t number_of_samples;
+
+    char **labels; // Array of unique string labels
+    size_t number_of_labels; // Size of the labels array
+}
+Dataset;
+
+typedef struct
+{
+    char dataset_path[MAX_PATH]; // Dataset file path
+    char acc_test_dataset_path[MAX_PATH]; // Test the accuracy of the algorithm with a labeled dataset & specific K value
+    char prediction_dataset_path[MAX_PATH]; // Unlabeled dataset file path containing samples to predict/label
+    char prediction_output_path[MAX_PATH]; // Save output at this path
+    size_t number_of_features;
+    size_t K; // K neighbors, by default 3; if `K >= samples available`, it's simply a majority vote between all samples...
+    size_t max_K;
+    bool retry_K;
+    bool standardize; // Standardize all sample features (false by default)
+    bool manual_samples; // Enter samples to predict manually, usually used for quick tests (false by default)
+    char token_delimiter[MAX_DELIM];
+    char decimals_delimiter;
+    char comment_delimiter[MAX_DELIM];
+    bool debug; // Verbose, used for debugging (false by default)
+} Args;
+Args global_args;
+
+ /**
+ * @brief Frees a `Dataset` object.
+ *
+ * @param dataset A pointer to a `Dataset` object  
+ * containing two arrays, for samples and labels.
+ */
+void free_dataset(Dataset *dataset)
+{
+    if (dataset == NULL)
+    {
+        if (global_args.debug) printf("[free_dataset] Dataset is NULL\n"); // Debugging
+        return;
+    }
+
+    if (dataset->samples != NULL)
+    {
+        for (size_t sample_index = 0; sample_index < dataset->number_of_samples; ++sample_index)
+        {
+            if (dataset->samples[sample_index].features != NULL)
+                free(dataset->samples[sample_index].features);
+        }
+        free(dataset->samples);
+    }
+
+    if (dataset->labels != NULL)
+    {
+        for (size_t label_index = 0; label_index < dataset->number_of_labels; ++label_index)
+        {
+            if (dataset->labels[label_index] != NULL)
+                free(dataset->labels[label_index]);
+        }
+        free(dataset->labels);
+    }
+
+    free(dataset);
+    if (global_args.debug) printf("[free_dataset] Dataset freed\n"); // Debugging
+}
+
+/**
+ * @brief Checks if a given string represents a valid number.
+ *
+ * Uses a Look-Up Table (LUT) for fast digit validation. Handles
+ * negative signs and a custom decimal delimiter.
+ *
+ * @param number The null-terminated string to check.
+ * @param decimals_delimiter The character used as the decimal separator.
+ * @return true if the string is a valid number, false otherwise.
+ */
+bool is_number(char *number, char decimals_delimiter)
+{
+    if (*number == '-') ++number;
+    if (*number == '\0') return false;
+    
+    static const unsigned char DIGIT_LUT[256] = {
+        ['1'] = 1, ['2'] = 1, ['3'] = 1,
+        ['4'] = 1, ['5'] = 1, ['6'] = 1,
+        ['7'] = 1, ['8'] = 1, ['9'] = 1,
+        ['0'] = 1 // `{['0'  '9']=1}` possible but less portable
+    };
+
+    bool delimiter_found = false;
+    while (*number)
+    {
+        char c = *number++;
+
+        if (DIGIT_LUT[(unsigned char)c]) continue;
+        if (c == decimals_delimiter)
+        {
+            if (delimiter_found) return false;
+            delimiter_found = true;
+            continue;
+        }
+        return false;
+    }
+    return true;
+}
+
+/**
+ * @brief Encodes a string label into a size_t index.
+ *
+ * If the label doesn't exist in the dataset, it dynamically adds it
+ * to the dataset's labels array.
+ *
+ * @param dataset A pointer to the Dataset object.
+ * @param label The string label to encode.
+ * @param out_label_index Pointer to store the resulting encoded label index.
+ * @return SUCCESS if successful, FAILURE on memory allocation error.
+ */
+int encode_label(Dataset *dataset, char *label, size_t *out_label_index)
+{
+    size_t label_index = 0;
+    while (label_index < dataset->number_of_labels && strcmp(dataset->labels[label_index], label) != 0)
+    {
+        ++label_index;
+    }
+    
+    if (label_index == dataset->number_of_labels)
+    {
+        char **temp_labels = realloc(dataset->labels, sizeof(char*) * (dataset->number_of_labels + 1));
+        if (temp_labels == NULL)
+        {
+            fprintf(stderr, "[encoded_label] Failed to re-allocate memory for dataset->labels\n");
+            return FAILURE;
+        }
+        dataset->labels = temp_labels;
+
+        char *copy = strdup(label);
+        if (copy == NULL) return FAILURE;
+        dataset->labels[dataset->number_of_labels++] = copy;
+    }
+    if (global_args.debug) printf("[encoded_label] label: '%s' (length: %zu)\n", label, strlen(label));
+
+    *out_label_index = label_index;
+    return SUCCESS;
+}
+
+/**
+ * @brief Reads sample data from a delimited text file and constructs a Dataset.
+ *
+ * Parses a file line by line, skipping comments and empty lines. It handles BOM 
+ * stripping, tokenizes the features using the provided delimiter, and stores 
+ * the label if necessary.
+ *
+ * @param file_path The path to the dataset file.
+ * @param number_of_features The expected number of features per sample.
+ * @param is_labeled Boolean indicating if the last token on each line is a label.
+ * @param token_delimiter The string used to separate features/labels.
+ * @param decimals_delimiter The character used for decimals in floating-point numbers.
+ * @param comment_delimiter The string that marks the start of a comment.
+ * @return A pointer to the allocated Dataset, or NULL if an error occurs.
+ */
+Dataset *read_data_from_file(
+    const char *file_path, size_t number_of_features, bool is_labeled,
+    char *token_delimiter, char decimals_delimiter, char *comment_delimiter
+)
+{
+    if (global_args.debug) printf("[read_data_from_file] Reading data from file: %s\n", file_path);
+
+    if (strcmp(token_delimiter, comment_delimiter) == 0)
+    {
+        fprintf(
+            stderr,
+            "[read_data_from_file] An error occured, token and comment delimiters cannot be the same (Token:%s | Comment:%s)\n",
+            token_delimiter,
+            comment_delimiter
+        );
+        return NULL;
+    }
+    if (token_delimiter[0] == decimals_delimiter || comment_delimiter[0] == decimals_delimiter)
+    {
+        fprintf(
+            stderr,
+            "[read_data_from_file] An error occured, token/comment delimiter cannot be the same as the decimals delimiter (%c)\n",
+            decimals_delimiter
+        );
+        return NULL;
+    }
+
+    FILE *data_file = fopen(file_path, "r"); // Does NOT throw, returns NULL upon failure
+    if (data_file == NULL) // File doesn't exist or maybe insufficient permissions to read ?
+    {
+        fprintf(stderr, "[read_data_from_file] Failed to open file: %s\n", file_path);
+        return NULL;
+    }
+
+    Dataset *dataset = (Dataset *)calloc(1, sizeof(Dataset));
+    if (dataset == NULL)
+    {
+        fprintf(stderr, "[read_data_from_file] Failed to allocate memory for dataset\n");
+        fclose(data_file);
+        return NULL;
+    }
+
+    const size_t feature_max_digits = 40; // a max of 40 digits per feature should be enough (the maximum precision for double is 15 or 17 ?)
+    const size_t label_max_chars = 100; // a max of 100 chars available for the label, enough to go crazy with the labels
+    const size_t line_size = (number_of_features * feature_max_digits) + label_max_chars + 1; // +1 for '\0'
+    
+    size_t line_number = 1;
+    char line[line_size];
+    bool bom_checked = false;
+    while(fgets(line, (int)(line_size), data_file))
+    {
+        if (strchr(line, '\n') == NULL && !feof(data_file))
+        {
+            fprintf(stderr, "[read_data_from_file] Line %zu is too long\n", line_number);
+            free_dataset(dataset);
+            fclose(data_file);
+            return NULL;
+        }
+
+        if (!bom_checked)
+        {
+            unsigned char *p_line = (unsigned char *)line;
+            
+            if (strlen(line) >= 3 && p_line[0] == 0xEF && p_line[1] == 0xBB && p_line[2] == 0xBF)
+                memmove(line, line + 3, strlen(line + 3) + 1);
+            
+            bom_checked = true;
+        }
+        
+        if (strncmp(line, comment_delimiter, strlen(comment_delimiter)) == 0)
+        {
+            if (global_args.debug) printf("[read_data_from_file] Line %zu skipped (fully commented line)\n", line_number);
+            ++line_number;
+            continue;
+        }
+
+        char *uncommented_line = strtok(line, comment_delimiter);
+        
+        // Empty line
+        if (uncommented_line == NULL)
+        {
+            if (global_args.debug) printf("[read_data_from_file] Line %zu skipped (empty line)\n", line_number);
+            ++line_number;
+            continue;
+        }
+        
+        // Strip newline
+        uncommented_line[strcspn(uncommented_line, "\r\n")] = '\0';
+
+        // Skip leading whitespace
+        while (*uncommented_line == ' ' || *uncommented_line == '\t') ++uncommented_line;
+
+        if (*uncommented_line == '\0')
+        {
+            if (global_args.debug) printf("[read_data_from_file] Line %zu skipped (whitespace-only line)\n", line_number);
+            ++line_number;
+            continue;
+        }
+
+        if (global_args.debug) printf("[read_data_from_file] uncommented_line (line %zu): %s\n", line_number, uncommented_line);
+
+        char *token_buffer = strtok(uncommented_line, token_delimiter);
+        size_t token_counter = 0;
+        
+        Sample sample = {
+            .features = (double *)malloc(sizeof(double) * number_of_features),
+            .encoded_label = 0 // 0 as a placeholder, this gets updated when calling `encode_label()` and passing sample by ref
+        };
+        if (sample.features == NULL)
+        {
+            fprintf(stderr, "[read_data_from_file] Failed to allocate memory for sample.features\n");
+            free_dataset(dataset);
+            fclose(data_file);
+            return NULL;
+        }
+        size_t current_number_of_features = 0;
+            
+        while(token_buffer != NULL)
+        {
+            if (global_args.debug) printf("[read_data_from_file] token_buffer: %s (token_counter: %zu)\n", token_buffer, token_counter);
+
+            // If true, we can stop here but we won't be able to find the exact number of features the sample has
+            // which requires the user to check by themself
+            //if (token_counter > number_of_features) break; // encountered bad line format probably; 
+
+            if (current_number_of_features < number_of_features)
+            {
+                if (!is_number(token_buffer, decimals_delimiter)) // encountered a value that is not a number
+                {
+                    fprintf(
+                        stderr,
+                        "[read_data_from_file] Encoutered a bad sample at line '%zu' (feature value is not a number ?)\n",
+                        line_number
+                    );
+                    free_dataset(dataset);
+                    free(sample.features);
+                    fclose(data_file);
+                    return NULL;
+                }
+                sample.features[current_number_of_features++] = strtod(token_buffer, NULL);
+            }
+            else if (is_labeled)
+            {
+                if (encode_label(dataset, token_buffer, &sample.encoded_label) == FAILURE)
+                {
+                    fprintf(
+                        stderr,
+                        "[read_data_from_file] Encoutered a bad sample at line '%zu' (feature value is not a number ?)\n",
+                        line_number
+                    );
+                    free_dataset(dataset);
+                    free(sample.features);
+                    fclose(data_file);
+                    return NULL;
+                }
+            }
+
+            token_buffer = strtok(NULL, token_delimiter);
+            ++token_counter;
+        }
+
+        size_t features_counted = (is_labeled && token_counter > 0) ? token_counter - 1 : token_counter; // -1 because of the label
+        if (features_counted != number_of_features)
+        {
+
+            fprintf(
+                stderr,
+                "[read_data_from_file] Encountered a mismatch: features counted [%zu] != expected [%zu] (line %zu)\n",
+                features_counted,
+                number_of_features,
+                line_number
+            );
+            free_dataset(dataset);
+            free(sample.features);
+            fclose(data_file);
+            return NULL;
+        }
+
+        Sample *temp_samples = (Sample *)realloc(dataset->samples, sizeof(Sample) * (dataset->number_of_samples + 1));
+        if (temp_samples == NULL)
+        {
+            fprintf(stderr, "[read_data_from_file] Failed to re-allocate memory for temp_samples\n");
+            free_dataset(dataset);
+            free(sample.features);
+            fclose(data_file);
+            return NULL;
+        }
+
+        dataset->samples = temp_samples;
+        dataset->samples[dataset->number_of_samples] = sample;
+        ++dataset->number_of_samples;
+        
+        ++line_number;
+    }
+    fclose(data_file);
+
+    if (global_args.debug) printf("[read_data_from_file] Successfully read data from file\n");
+    return dataset;
+}
+
+/**
+ * @brief Makes a deep copy of a `Dataset` object.
+ *
+ * @attention Labels are not copied because they are not used!
+ *
+ * @param dataset A pointer to the `Dataset` object to copy.
+ * @param number_of_features The number of features.
+ *
+ * @returns A pointer to a newly allocated and copied `Dataset` object.
+ */
+Dataset *deep_copy_dataset(const Dataset *dataset, size_t number_of_features)
+{
+    Dataset *copy = calloc(1, sizeof(Dataset));
+    if (copy == NULL)
+    {
+        fprintf(stderr, "[deep_copy_dataset] Failed to allocate memory for copy\n");
+        return NULL;
+    }
+
+    copy->samples = malloc(dataset->number_of_samples * sizeof(Sample));
+    if (copy->samples == NULL)
+    {
+        fprintf(stderr, "[deep_copy_dataset] Failed to allocate memory for copy->samples\n");
+        free_dataset(copy);
+        return NULL;
+    }
+    copy->number_of_samples = 0;
+
+    for (size_t sample_index = 0; sample_index < dataset->number_of_samples; ++sample_index)
+    {
+        copy->samples[sample_index].features = malloc(number_of_features * sizeof(double));
+        if (copy->samples[sample_index].features == NULL)
+        {
+            fprintf(stderr, "[deep_copy_dataset] Failed to allocate memory for copy->samples[sample_index].features\n");
+            free_dataset(copy);
+            return NULL;
+        }
+        
+        for (size_t feature_index = 0; feature_index < number_of_features; ++feature_index)
+        {
+            copy->samples[sample_index].features[feature_index] = dataset->samples[sample_index].features[feature_index];
+        }
+        
+        copy->samples[sample_index].encoded_label = dataset->samples[sample_index].encoded_label;
+
+        ++copy->number_of_samples;
+    }
+
+    if (global_args.debug) printf("[deep_copy_dataset] Successfully deep-copied dataset\n");
+    return copy;
+}
+
+/**
+ * @brief Calculates the mean for each feature.
+ *
+ * @attention Assumes dataset->number_of_samples is greater than 0.
+ *
+ * @param dataset A pointer to a `Dataset` object containing the array of samples and its count.
+ * @param number_of_features The number of features.
+ *
+ * @returns An array containing the mean value of each feature.
+ */
+double *calculate_mean(const Dataset *dataset, size_t number_of_features)
+{
+    // Mean value for each feature (initialized with 0s)
+    double *mean = calloc(number_of_features, sizeof(double));
+    if (mean == NULL) // check
+    {
+        fprintf(stderr, "[calculate_mean] Failed to allocate memory for mean\n");
+        return NULL;
+    }
+
+    // Loop through the samples and sum the features respectively
+    for (size_t sample_index = 0; sample_index < dataset->number_of_samples; ++sample_index)
+    {
+        for (size_t feature_index = 0; feature_index < number_of_features; ++feature_index)
+        {
+            mean[feature_index] += dataset->samples[sample_index].features[feature_index];
+        }
+    }
+
+    // Finally, divide each value by the number of samples
+    for (size_t feature_index = 0; feature_index < number_of_features; ++feature_index)
+    {
+        mean[feature_index] /= dataset->number_of_samples;
+    }
+
+    if (global_args.debug) printf("[calculate_mean] Calculated mean successfully\n");
+    return mean;
+}
+
+/**
+ * @brief Calculates the standard deviation for each feature.
+ *
+ * @attention Assumes dataset->number_of_samples is greater than 0.
+ *
+ * @param dataset A pointer to a `Dataset` object containing the array of samples and its count.
+ * @param mean An array containing the mean value of each feature.
+ * @param number_of_features The number of features.
+ *
+ * @returns An array containing the standard deviation of every feature.
+ */
+double *calculate_std_deviation(const Dataset *dataset, const double *mean, size_t number_of_features)
+{
+    // Standard deviation value for each feature (initialized with 0s)
+    double *standard_deviation = calloc(number_of_features, sizeof(double));
+    if (standard_deviation == NULL) // check
+    {
+        fprintf(stderr, "[calculate_std_deviation] Failed to allocate memory for standard_deviation\n");
+        return NULL;
+    }
+
+    // Loop through the samples and sum all the squared differences (feature - mean)^2
+    for (size_t sample_index = 0; sample_index < dataset->number_of_samples; ++sample_index)
+    {
+        for (size_t feature_index = 0; feature_index < number_of_features; ++feature_index)
+        {
+            double diff = dataset->samples[sample_index].features[feature_index] - mean[feature_index];
+            standard_deviation[feature_index] += diff * diff;
+            // pow() would've been slower :P
+        }
+    }
+
+    // Finally, divide each value by the number of samples to get the variance
+    // and then use `sqrt` to get the standard deviation
+    for (size_t feature_index = 0; feature_index < number_of_features; ++feature_index)
+    {
+        standard_deviation[feature_index] = sqrt(standard_deviation[feature_index] / dataset->number_of_samples);
+    }
+
+    if (global_args.debug) printf("[calculate_std_deviation] Calculated standard deviation successfully\n");
+    return standard_deviation;
+}
+
+/**
+ * @brief Standardizes the features of the whole dataset and those of the new sample.
+ *
+ * x(standardized​) = (x − μ)​ / σ
+ *
+ * Modifies all sample features in-place  
+ * instead of returning a new `Sample` with the modified values.
+ *
+ * @attention Exits with an error message if a division by 0 occurs.
+ *
+ * @param dataset A pointer to a `Dataset` object containing the array of samples and its count.
+ * @param mean The mean value from the train dataset
+ * @param standard_deviation The standard deviation from the train dataset.
+ * @param number_of_features The number of features each sample has.
+ * 
+ * @returns SUCCESS if features get standardized, otherise FAILURE.
+ */
+int standardize_data(Dataset *dataset, const double *mean, const double *standard_deviation, size_t number_of_features)
+{
+    // Check size because there's a division with size as denominator
+    if (dataset->number_of_samples == 0)
+    {
+        fprintf(stderr, "[standardize_data] Failed to standardize features. No samples were found ? Avoided division by 0\n");
+        return FAILURE;
+    }
+
+    for (size_t sample_index = 0; sample_index < dataset->number_of_samples; ++sample_index)
+    {
+        for (size_t feature_index = 0; feature_index < number_of_features; ++feature_index)
+        {
+            if (standard_deviation[feature_index] == 0) // Again, avoid dividing by 0...
+            {
+                fprintf(stderr, "[standardize_data] Feature %zu has 0 for standard deviation. Avoided division by 0\n", feature_index);
+                return FAILURE;
+            }
+            // x_standardized = (x - mu) / standard_deviation
+            double x = dataset->samples[sample_index].features[feature_index];
+            double mu = mean[feature_index];
+            double std = standard_deviation[feature_index];
+
+            // x_standardized
+            dataset->samples[sample_index].features[feature_index] = (x - mu) / std;
+        }
+    }
+
+    if (global_args.debug) printf("[standardize_data] Features standardized successfully\n");
+    return SUCCESS;
+}
+
+/**
+ * @brief Calculates the Euclidian distance between two samples.
+ *
+ * @param sample1 The first sample.
+ * @param sample2 The second sample.
+ * @param number_of_features The number of features.
+ *
+ * @returns The Euclidian distance between `sample1` and `sample2`.
+ */
+double calculate_euclidian_distance(const Sample *sample1, const Sample *sample2, size_t number_of_features)
+{
+    // Calculate the euclidian distance
+    double euclidian_distance = 0;
+
+    for (size_t feature_index = 0; feature_index < number_of_features; ++feature_index)
+    {
+        double diff = sample1->features[feature_index] - sample2->features[feature_index];
+        euclidian_distance += diff * diff;
+    }
+    return sqrt(euclidian_distance);
+}
+
+typedef struct {
+    size_t index;
+    double distance;
+} FarthestPoint;
+
+/**
+ * @brief Finds the farthest sample in an array of samples.
+ *
+ * @param dataset A pointer to a `Dataset` object containing the array of samples and its count.
+ * @param sample The main sample.
+ * @param number_of_features The number of features each sample has.
+ *
+ * @returns A `FarthestPoint` object containing the index and euclidian distance of the farthest sample.
+ */
+FarthestPoint find_farthest_sample(const Dataset *dataset, const Sample *sample, size_t number_of_features)
+{
+    // The index and euclidian distance of the farthest sample in the samples array
+    FarthestPoint farthest = {0, -1.0};
+
+    for (size_t sample_index = 0; sample_index < dataset->number_of_samples; ++sample_index)
+    {
+        // Euclidean distance
+        double euclidian_distance = calculate_euclidian_distance(sample, &dataset->samples[sample_index], number_of_features);
+
+        // Store the sample's index and distance if necessary
+        if (euclidian_distance > farthest.distance)
+        {
+            farthest.index = sample_index;
+            farthest.distance = euclidian_distance;
+        }
+    }
+    return farthest;
+}
+
+/**
+ * @brief Finds the K nearest samples (neighbors) to a query sample.
+ *
+ * Calculates the Euclidean distance between the query sample and all 
+ * samples in the dataset. Maintains a bounded list of the K closest 
+ * samples, replacing the farthest one when a closer match is found.
+ *
+ * @param dataset Pointer to the main Dataset.
+ * @param sample Pointer to the query Sample to evaluate.
+ * @param number_of_features The dimensionality of the samples.
+ * @param K The maximum number of neighbors to retrieve.
+ * @return A dynamically allocated Dataset containing the K nearest neighbors, or NULL on failure.
+ */
+Dataset *get_K_nearest_neighbors(const Dataset *dataset, const Sample *sample, size_t number_of_features, size_t K)
+{
+    Dataset *neighbors = malloc(sizeof(Dataset));
+    if (neighbors == NULL)
+    {
+        fprintf(stderr, "[get_K_nearest_neighbors] Failed to allocate memory for neighbors\n");
+        return NULL;
+    }
+    neighbors->labels = NULL;
+    neighbors->number_of_labels = 0;
+
+    neighbors->samples = malloc(K * sizeof(Sample));
+    if (neighbors->samples == NULL)
+    {
+        fprintf(stderr, "[get_K_nearest_neighbors] Failed to allocate memory for neighbors->samples\n");
+        free_dataset(neighbors);
+        return NULL;
+    }
+    neighbors->number_of_samples = 0;
+
+    for (size_t sample_index = 0; sample_index < dataset->number_of_samples; ++sample_index)
+    {
+        if (neighbors->number_of_samples >= K)
+        {
+            FarthestPoint farthest_sample = find_farthest_sample(neighbors, sample, number_of_features);
+            if (farthest_sample.distance == -1.0)
+            {
+                fprintf(stderr, "[get_K_nearest_neighbors] Failed to find farthest sample\n");
+                free_dataset(neighbors);
+                return NULL;
+            }
+            size_t farthest_sample_index = farthest_sample.index;
+            double farthest_sample_distance = farthest_sample.distance;
+
+            if (calculate_euclidian_distance(sample, &dataset->samples[sample_index], number_of_features) < farthest_sample_distance)
+            {
+                for (size_t feature_index = 0; feature_index < number_of_features; ++feature_index)
+                {
+                    neighbors->samples[farthest_sample_index].features[feature_index] = dataset->samples[sample_index].features[feature_index];
+                }
+                
+                neighbors->samples[farthest_sample_index].encoded_label = dataset->samples[sample_index].encoded_label;
+            }
+        }
+        else
+        {
+            neighbors->samples[neighbors->number_of_samples].features = malloc(number_of_features * sizeof(double));
+            if (neighbors->samples[neighbors->number_of_samples].features == NULL)
+            {
+                fprintf(stderr, "[get_K_nearest_neighbors] Failed to allocate memory for neighbors->samples[%zu].features\n", neighbors->number_of_samples);
+                free_dataset(neighbors);
+                return NULL;
+            }
+            
+            for (size_t feature_index = 0; feature_index < number_of_features; ++feature_index)
+            {
+                neighbors->samples[neighbors->number_of_samples].features[feature_index] = dataset->samples[sample_index].features[feature_index];
+            }
+            
+            neighbors->samples[neighbors->number_of_samples].encoded_label = dataset->samples[sample_index].encoded_label;
+            
+            ++neighbors->number_of_samples;
+        }
+    }
+    return neighbors;
+}
+
+/**
+ * @brief Computes the frequency of each label within a dataset.
+ *
+ * @param dataset Pointer to the Dataset (usually the K nearest neighbors).
+ * @param number_of_labels Total number of unique labels in the main training set.
+ * @param out_label_frequencies Double pointer to output the allocated frequencies array.
+ * @return SUCCESS on completion, or FAILURE on memory error.
+ */
+int get_label_frequencies(const Dataset *dataset, size_t number_of_labels, size_t **out_label_frequencies)
+{   
+    size_t *label_frequencies = calloc(number_of_labels, sizeof(size_t));
+
+    if (label_frequencies == NULL)
+    {
+        fprintf(stderr, "[get_label_frequencies] Failed to allocate memory for label_frequencies\n");
+        return FAILURE;
+    }
+
+    for (size_t sample_index = 0; sample_index < dataset->number_of_samples; ++sample_index)
+    {
+        size_t sample_encoded_label = dataset->samples[sample_index].encoded_label;
+        ++label_frequencies[sample_encoded_label];
+    }
+    
+    *out_label_frequencies = label_frequencies;
+    return SUCCESS;
+}
+
+/**
+ * @brief Classifies a sample by determining the majority label among its neighbors.
+ *
+ * Evaluates the vote count (frequencies) of all labels present in the 
+ * neighbors dataset and selects the label with the highest count.
+ *
+ * @param neighbors Pointer to the Dataset containing the K nearest samples.
+ * @param number_of_labels The total number of unique labels in the main training set.
+ * @param out_predicted_label Pointer to store the winning encoded label index.
+ * @return SUCCESS on completion, or FAILURE on memory error.
+ */
+int classify_data(const Dataset *neighbors, size_t number_of_labels, size_t *out_predicted_label)
+{
+    size_t *frequencies;
+    if (get_label_frequencies(neighbors, number_of_labels, &(frequencies)) == FAILURE)
+    {
+        fprintf(stderr, "[classify_data] Failed to get label frequencies\n");
+        return FAILURE;
+    }
+
+    size_t majority_vote = 0;
+    size_t winner_index = 0;
+    for (size_t label_index = 0; label_index < number_of_labels; ++label_index)
+    {
+        if (frequencies[label_index] > majority_vote)
+        {
+            majority_vote = frequencies[label_index];
+            winner_index = label_index;
+        }
+    }
+
+    *out_predicted_label = winner_index;
+    free(frequencies);
+
+    return SUCCESS;
+}
+
+void print_usage_examples(const char* program_name)
+{
+    printf("=== %s Usage Examples ===\n", program_name);
+
+    printf("\n1. Run KNN on a dataset with 3 features per sample\n");
+    CMD_PRINT(ANSI_COLOR_GREEN, program_name, "-f datasets/knn/train -n 3");
+
+    printf("\n2. Standardize features before classification\n");
+    CMD_PRINT(ANSI_COLOR_GREEN, program_name, "-f datasets/knn/train -n 3 --std");
+
+    printf("\n3. Set K manually to 5 neighbors\n");
+    CMD_PRINT(ANSI_COLOR_GREEN, program_name, "-f datasets/knn/train -n 3 -k 5");
+
+    printf("\n4. Predict on an unlabeled dataset\n");
+    CMD_PRINT(ANSI_COLOR_GREEN, program_name, "-f datasets/knn/train -n 3 -p datasets/knn/test");
+
+    printf("\n5. Test accuracy using a labeled dataset\n");
+    CMD_PRINT(ANSI_COLOR_GREEN, program_name, "-f datasets/knn/train -n 3 -a datasets/knn/test");
+
+    printf("\n6. Enter samples manually for prediction\n");
+    CMD_PRINT(ANSI_COLOR_GREEN, program_name, "-f datasets/knn/train -n 3 --manual");
+
+    printf("\n7. Save predictions to a file\n");
+    CMD_PRINT(ANSI_COLOR_GREEN, program_name, "-f datasets/knn/train -n 3 -p datasets/knn/test -o output.txt");
+
+    printf("\n8. Custom token & decimal delimiters\n");
+    CMD_PRINT(ANSI_COLOR_GREEN, program_name, "-f datasets/knn/train.ssv -n 3 --tdel ; --ddel ,");
+
+    printf("\n9. Run a demo using the repo's sample dataset:\n");
+    CMD_PRINT(ANSI_COLOR_GREEN, program_name, "-f datasets/knn/train -a datasets/knn/test -n 5 -k 5 --std");
+
+    printf("\n10. Show all options and usage info\n");
+    CMD_PRINT(ANSI_COLOR_GREEN, program_name, "help");
+
+    printf("\nNotes:\n");
+    printf("- Options order does not matter.\n");
+    printf("- Combine multiple options as needed (e.g., training + standardization + elbow method).\n");
+}
+
+void print_usage(const char *program_name)
+{
+    printf("Usage: %s [Options]\n", program_name);
+    printf("Options:\n");
+    printf("  -f <string>           Dataset file path\n");
+    printf("  -a <string>           Labeled dataset used to test accuracy with preferred K neighbors\n");
+    printf("  -p <string>           Unlabeled dataset file path containing the samples to predict\n");
+    printf("  -o <string>           Save output file containing samples with predicted labels\n");
+    printf("  -n <integer>          Number of features per sample (default: 1)\n");
+    printf("  -k <integer>          Set the K value (default: 3)\n");
+    printf("  --max-k <integer>     Set the max K value (default: 3; auto-adjusts for odd value; K increments by 2 until >= max_K)\n");
+    printf("  --retry-k             Prompt to retry with another K value after accuracy results (false by default)\n");
+    printf("  --std                 Standardize all sample features (false by default)\n");
+    printf("  --manual-samples      Enter the samples to predict manually (false by default; skips `-p`)\n");
+    printf("  --tdel <string>       Token delimiter (default: space)\n");
+    printf("  --ddel <char>         Decimal delimiter (default: .)\n");
+    printf("  --cdel <string>       Comment delimiter (default: #)\n");
+    printf("\n");
+    printf("  -v, --debug           Verbose, used for debugging (false by default)\n");
+    printf("  examples              Shows a list of usage examples\n");
+    printf("  help                  Usage and options menu (this command)\n");
+}
+
+Args parse_args(int argc, char **argv)
+{
+    Args args;
+
+    // Default values
+    strncpy(args.dataset_path, "", MAX_PATH-1);
+    strncpy(args.acc_test_dataset_path, "", MAX_PATH-1);
+    strncpy(args.prediction_dataset_path, "", MAX_PATH-1);
+    strncpy(args.prediction_output_path, "", MAX_PATH-1);
+    args.number_of_features = 3;
+    args.K = 3;
+    args.max_K = 3;
+    args.retry_K = false;
+    args.standardize = false;
+    args.manual_samples = false;
+    strncpy(args.token_delimiter, " ", MAX_DELIM-1);
+    args.decimals_delimiter = '.';
+    strncpy(args.comment_delimiter, "#", MAX_DELIM-1);
+    args.debug = false;
+
+    for (int i = 1; i < argc; i++)
+    {
+        if (strcmp(argv[i], "-f") == 0 && i+1 < argc)
+            strncpy(args.dataset_path, argv[++i], MAX_PATH-1);
+        else if (strcmp(argv[i], "-a") == 0 && i+1 < argc)
+            strncpy(args.acc_test_dataset_path, argv[++i], MAX_PATH-1);
+        else if (strcmp(argv[i], "-p") == 0 && i+1 < argc)
+            strncpy(args.prediction_dataset_path, argv[++i], MAX_PATH-1);
+        else if (strcmp(argv[i], "-o") == 0 && i+1 < argc)
+            strncpy(args.prediction_output_path, argv[++i], MAX_PATH-1);
+        else if (strcmp(argv[i], "-n") == 0 && i+1 < argc)
+        {
+            char *endptr;
+            args.number_of_features = strtoul(argv[++i], &endptr, 10);
+            if (*endptr != '\0') {
+                fprintf(stderr, "Invalid number of features: %s\n", argv[i]);
+                exit(EXIT_FAILURE);
+            }
+        }
+        else if (strcmp(argv[i], "-k") == 0 && i+1 < argc)
+        {
+            char *endptr;
+            args.K = strtoul(argv[++i], &endptr, 10);
+            if (*endptr != '\0' || args.K == 0) {
+                fprintf(stderr, "Invalid K value: %s\n", argv[i]);
+                exit(EXIT_FAILURE);
+            }
+        }
+        else if (strcmp(argv[i], "--max-k") == 0 && i+1 < argc)
+        {
+            char *endptr;
+            args.max_K = strtoul(argv[++i], &endptr, 10);
+            if (*endptr != '\0') {
+                fprintf(stderr, "Invalid max K value: %s\n", argv[i]);
+                exit(EXIT_FAILURE);
+            }
+        }
+        else if (strcmp(argv[i], "--retry-k") == 0)
+            args.retry_K = true;
+        else if (strcmp(argv[i], "--std") == 0)
+            args.standardize = true;
+        else if (strcmp(argv[i], "--manual-samples") == 0)
+            args.manual_samples = true;
+        else if (strcmp(argv[i], "--tdel") == 0 && i+1 < argc)
+            strncpy(args.token_delimiter, argv[++i], MAX_DELIM-1);
+        else if (strcmp(argv[i], "--ddel") == 0 && i+1 < argc)
+            args.decimals_delimiter = argv[++i][0];
+        else if (strcmp(argv[i], "--cdel") == 0 && i+1 < argc)
+            strncpy(args.comment_delimiter, argv[++i], MAX_DELIM-1);
+        else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--debug") == 0)
+            args.debug = true;
+        else if (strcmp(argv[i], "examples") == 0)
+        {
+            print_usage_examples(argv[0]);
+            exit(EXIT_SUCCESS);
+        }
+        else
+        {
+            print_usage(argv[0]);
+            exit((strcmp(argv[i], "help") == 0) ? EXIT_SUCCESS : EXIT_FAILURE);
+        }
+    }
+
+    if (args.max_K <= args.K) args.max_K = args.K;
+    else if (args.max_K % 2 == 0) ++args.max_K;
+
+    return args;
+}
+
+int main(int argc, char *argv[])
+{
+    global_args = parse_args(argc, argv);
+    if (global_args.debug)
+    {
+        printf("Debugging: true\n");
+        printf("\n");
+        printf("Dataset path: %s\n",  global_args.dataset_path);
+        printf("Accuracy test dataset path: %s\n",  global_args.acc_test_dataset_path);
+        printf("Prediction dataset path: %s\n",  global_args.prediction_dataset_path);
+        printf("Prediction output path: %s\n",  global_args.prediction_output_path);
+        printf("Number of features: %zu\n",  global_args.number_of_features);
+        printf("K value: %zu\n",  global_args.K);
+        printf("Max K value: %zu\n",  global_args.max_K);
+        printf("Standardize: %s\n", global_args.standardize ? "true" : "false");
+        printf("Retry K: %s\n", global_args.retry_K ? "true" : "false");
+        printf("Manual samples: %s\n", global_args.manual_samples ? "true" : "false");
+        printf("Token delimiter: '%s'\n", global_args.token_delimiter);
+        printf("Decimal delimiter: '%c'\n", global_args.decimals_delimiter);
+        printf("Comment delimiter: '%s'\n", global_args.comment_delimiter);
+        printf("\n");
+    }
+    
+    if (global_args.debug) printf("[main] Loading dataset\n");
+    Dataset *dataset = read_data_from_file(
+        global_args.dataset_path,
+        global_args.number_of_features,
+        true,
+        global_args.token_delimiter,
+        global_args.decimals_delimiter,
+        global_args.comment_delimiter
+    );
+    if (dataset == NULL)
+    {
+        fprintf(stderr, "[main] Failed to load dataset\n");
+        return EXIT_FAILURE;
+    }
+
+    double *mean = calculate_mean(dataset, global_args.number_of_features); // freed at the end of main function
+    if (mean == NULL)
+    {
+        fprintf(stderr, "[main] Failed to calculate mean\n");
+        free_dataset(dataset);
+        return EXIT_FAILURE;
+    }
+    double *standard_deviation = calculate_std_deviation(
+        dataset, mean, global_args.number_of_features
+    );  // freed at the end of main function
+    if (standard_deviation == NULL)
+    {
+        fprintf(stderr, "[main] Failed to calculate standard deviation\n");
+        free(mean);
+        free_dataset(dataset);
+        return EXIT_FAILURE;
+    }
+
+    if (global_args.standardize)
+    {
+        if (global_args.debug) printf("[main] Standardizing sample features\n");
+        if (standardize_data(dataset, mean, standard_deviation, global_args.number_of_features) == FAILURE)
+        {
+            fprintf(stderr, "[main] Failed to standardize features\n");
+            free(standard_deviation);
+            free(mean);
+            free_dataset(dataset);
+            return EXIT_FAILURE;
+        }
+        if (global_args.debug) printf("[main] Done\n");
+    }
+
+    printf("Dataset loaded\n");
+
+    if (strcmp(global_args.acc_test_dataset_path, "") != 0)
+    {
+        Dataset *test_dataset = read_data_from_file(
+            global_args.acc_test_dataset_path,
+            global_args.number_of_features,
+            true,
+            global_args.token_delimiter,
+            global_args.decimals_delimiter,
+            global_args.comment_delimiter
+        );
+        if (test_dataset == NULL)
+        {
+            fprintf(stderr, "[main] Failed to load test dataset\n");
+            free(standard_deviation);
+            free(mean);
+            free_dataset(dataset);
+            return EXIT_FAILURE;
+        }
+        if (global_args.standardize)
+        {
+            if (standardize_data(test_dataset, mean, standard_deviation, global_args.number_of_features) == FAILURE)
+            {
+                fprintf(stderr, "[main] Failed to standardize features in test_dataset\n");
+                free_dataset(test_dataset);
+                free(standard_deviation);
+                free(mean);
+                free_dataset(dataset);
+                return EXIT_FAILURE;
+            }
+        }
+
+        char user_input[16] = "";
+        bool retry = global_args.retry_K;
+        size_t correct_predictions = 0;
+        size_t temp_K = global_args.K;
+        size_t max_K = global_args.max_K;
+
+        printf("\nRunning accuracy test...\n");
+
+        do
+        {
+            printf("\nTesting with K=%zu (max K: %zu)\n\n", temp_K, max_K);
+
+            for (size_t sample_index = 0; sample_index < test_dataset->number_of_samples; ++sample_index)
+            {
+                Dataset *neighbors = get_K_nearest_neighbors(
+                    dataset, &test_dataset->samples[sample_index],
+                    global_args.number_of_features, temp_K
+                );
+                if (neighbors == NULL)
+                {
+                    fprintf(stderr, "[main] Failed to get K nearest neighbors\n");
+                    free_dataset(test_dataset);
+                    free(standard_deviation);
+                    free(mean);
+                    free_dataset(dataset);
+                    return EXIT_FAILURE;
+                }
+
+                size_t predicted_encoded_label;
+                if (classify_data(neighbors, dataset->number_of_labels, &predicted_encoded_label) == FAILURE)
+                {
+                    fprintf(stderr, "[main] Failed to classify samples from test dataset (sample_index: %zu)\n", sample_index);
+                    free_dataset(neighbors);
+                    free_dataset(test_dataset);
+                    free(standard_deviation);
+                    free(mean);
+                    free_dataset(dataset);
+                    return EXIT_FAILURE;
+                }
+                char *predicted_label = dataset->labels[predicted_encoded_label];
+                char *test_label = test_dataset->labels[test_dataset->samples[sample_index].encoded_label];
+
+                bool is_correct = (strcmp(test_label, predicted_label) == 0);
+                correct_predictions += is_correct ? 1 : 0;
+
+                printf(
+                    "Sample %s%zu%s was labeled %s (Expected: %s, Predicted: %s)\n",
+                    ANSI_COLOR_MAGENTA,
+                    sample_index,
+                    ANSI_COLOR_RESET,
+                    is_correct ? ANSI_COLOR_GREEN "CORRECTLY" ANSI_COLOR_RESET : ANSI_COLOR_RED "INCORRECTLY" ANSI_COLOR_RESET,
+                    test_label,
+                    predicted_label
+                );
+
+                free_dataset(neighbors);
+            }
+
+            printf("\n\nAccuracy with K=%zu: %0.2f%%\n\n", temp_K, (float)correct_predictions / test_dataset->number_of_samples * 100);
+            correct_predictions = 0;
+
+            if (temp_K <= max_K)
+            {
+                temp_K += (temp_K % 2 == 0) ? 1 : 2;
+            }
+            
+            if (temp_K > max_K && retry)
+            {
+                printf("\nUpdate K and retry (y/n)? ");
+                scanf("%15s", user_input);
+                retry = user_input[0] == 'y' ? true : false;
+                
+                while (retry)
+                {
+                    printf("K neighbors: ");
+                    scanf("%15s", user_input);
+                    if (is_number(user_input, global_args.decimals_delimiter))
+                    {
+                        temp_K = (size_t)strtod(user_input, NULL);
+                        if (temp_K > 0) break; // Do not set answer to true, it will update K but not retry
+                    }
+                }
+                
+                max_K = temp_K; // to avoid entering the condition above no matter what the user input is
+            }
+
+        } while (retry || temp_K <= max_K);
+
+        free_dataset(test_dataset);
+    }
+
+    if (strcmp(global_args.prediction_dataset_path, "") != 0 || global_args.manual_samples)
+    {
+        Dataset *unlabeled_dataset = NULL;
+
+        if (global_args.manual_samples)
+        {
+            printf("\nNumber of samples: ");
+            size_t number_of_samples; scanf("%zu", &number_of_samples);
+
+            // Allocate memory for the dataset and the samples
+
+            unlabeled_dataset = calloc(1, sizeof(Dataset));
+            if (unlabeled_dataset == NULL)
+            {
+                fprintf(stderr, "[main] Failed to allocate memory for unlabeled_dataset\n");
+                free(standard_deviation);
+                free(mean);
+                free_dataset(dataset);
+                return EXIT_FAILURE;
+            }
+
+            unlabeled_dataset->samples = calloc(number_of_samples, sizeof(Sample));
+            if (unlabeled_dataset->samples == NULL)
+            {
+                fprintf(stderr, "[main] Failed to allocate memory for unlabeled_dataset->samples\n");
+                free_dataset(unlabeled_dataset);
+                free(standard_deviation);
+                free(mean);
+                free_dataset(dataset);
+                return EXIT_FAILURE;
+            }
+
+            // Fill the dataset with unlabeled samples
+            for (size_t sample_index = 0; sample_index < number_of_samples; ++sample_index)
+            {
+                unlabeled_dataset->samples[sample_index].encoded_label = 0;
+                unlabeled_dataset->samples[sample_index].features = malloc(global_args.number_of_features * sizeof(double));
+                if (unlabeled_dataset->samples[sample_index].features == NULL)
+                {
+                    fprintf(stderr, "[main] Failed to allocate memory for unlabeled_dataset->samples[sample_index].features\n");
+                    free_dataset(unlabeled_dataset);
+                    free(standard_deviation);
+                    free(mean);
+                    free_dataset(dataset);
+                    return EXIT_FAILURE;
+                }
+
+                printf("\n-- Enter the features of the sample %zu --\n", sample_index+1);
+
+                size_t feature_index = 0;
+                while (feature_index < global_args.number_of_features)
+                {
+                    printf("Feature %zu: ", feature_index+1);
+                    scanf("%lf", &unlabeled_dataset->samples[sample_index].features[feature_index]);
+                    ++feature_index;
+                }
+                ++unlabeled_dataset->number_of_samples;
+            }
+        }
+        else
+        {
+            unlabeled_dataset = read_data_from_file(
+                global_args.prediction_dataset_path,
+                global_args.number_of_features,
+                false,
+                global_args.token_delimiter,
+                global_args.decimals_delimiter,
+                global_args.comment_delimiter
+            );
+            if (unlabeled_dataset == NULL)
+            {
+                fprintf(stderr, "[main] Failed to load unlabeled dataset\n");
+                free(standard_deviation);
+                free(mean);
+                free_dataset(dataset);
+                return EXIT_FAILURE;
+            }
+
+            printf("Unlabeled dataset loaded\n\n");
+        }
+
+        // Deep copy dataset before standardizing to save samples with non-standardized features and their respective label, if needed
+        Dataset *unlabeled_dataset_copy = NULL;
+        if (global_args.standardize)
+        {
+            unlabeled_dataset_copy = deep_copy_dataset(unlabeled_dataset, global_args.number_of_features);
+            if (standardize_data(unlabeled_dataset, mean, standard_deviation, global_args.number_of_features) == FAILURE)
+            {
+                fprintf(stderr, "[main] Failed to standardize features in unlabeled_dataset\n");
+                free_dataset(unlabeled_dataset);
+                free(standard_deviation);
+                free(mean);
+                free_dataset(dataset);
+                free_dataset(unlabeled_dataset_copy);
+                return EXIT_FAILURE;
+            }
+        }
+
+        for (size_t sample_index = 0; sample_index < unlabeled_dataset->number_of_samples; ++sample_index)
+        {
+            Dataset *neighbors = get_K_nearest_neighbors(dataset, &unlabeled_dataset->samples[sample_index], global_args.number_of_features, global_args.K);
+            if (neighbors == NULL)
+            {
+                fprintf(stderr, "[main] Failed to get K nearest neighbors\n");
+                free_dataset(unlabeled_dataset_copy);
+                free_dataset(unlabeled_dataset);
+                free(standard_deviation);
+                free(mean);
+                free_dataset(dataset);
+                return EXIT_FAILURE;
+            }
+            size_t predicted_label;
+            if (classify_data(neighbors, dataset->number_of_labels, &predicted_label) == FAILURE)
+            {
+                fprintf(stderr, "[main] Failed to classify samples from unlabeled dataset (sample_index: %zu)\n", sample_index);
+                free_dataset(neighbors);
+                free_dataset(unlabeled_dataset_copy);
+                free_dataset(unlabeled_dataset);
+                free(standard_deviation);
+                free(mean);
+                free_dataset(dataset);
+                return EXIT_FAILURE;
+            }
+            unlabeled_dataset->samples[sample_index].encoded_label = predicted_label;
+
+            printf(
+                "Sample %s%zu%s was labeled as: %s%s%s\n",
+                ANSI_COLOR_MAGENTA,
+                sample_index,
+                ANSI_COLOR_RESET,
+                ANSI_COLOR_CYAN,
+                dataset->labels[predicted_label],
+                ANSI_COLOR_RESET
+            );
+            free_dataset(neighbors);
+        }
+
+        if (strcmp(global_args.prediction_output_path, "") != 0) // Save
+        {
+            FILE *file = fopen(global_args.prediction_output_path, "w");
+            if (file == NULL)
+            {
+                fprintf(stderr, "[main] Failed to open in write mode the file at path: %s\n", global_args.prediction_output_path);
+                free_dataset(unlabeled_dataset_copy);
+                free_dataset(unlabeled_dataset);
+                free(standard_deviation);
+                free(mean);
+                free_dataset(dataset);
+                return EXIT_FAILURE;
+            }
+            
+            Dataset *temp_unlabeled_dataset = unlabeled_dataset;
+            if (unlabeled_dataset_copy != NULL) temp_unlabeled_dataset = unlabeled_dataset_copy; // Use copy to get original feature values
+
+            for (size_t sample_index = 0; sample_index < unlabeled_dataset->number_of_samples; ++sample_index)
+            {
+                for (size_t feature_index = 0; feature_index < global_args.number_of_features; ++feature_index)
+                    fprintf(file, "%g ", temp_unlabeled_dataset->samples[sample_index].features[feature_index]);
+                
+                size_t unlabeled_sample_encoded_label = unlabeled_dataset->samples[sample_index].encoded_label;
+                fprintf(file, "%s\n", dataset->labels[unlabeled_sample_encoded_label]);
+            }
+            fclose(file);
+
+            printf("\nResults saved to file.\n");
+        }
+        else printf("\nResults were discarded.\n");
+        
+        free_dataset(unlabeled_dataset);
+        free_dataset(unlabeled_dataset_copy);
+    }
+
+    free(mean);
+    free(standard_deviation);
+    free_dataset(dataset);
+
+    return EXIT_SUCCESS;
+}

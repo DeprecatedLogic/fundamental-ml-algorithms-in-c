@@ -1,0 +1,20 @@
+# feature_1 feature_2 expected_label
+22 36.0 zero
+48 73.5 one
+37 54.5 zero
+54 84.5 one
+20 34.5 zero
+58 87.5 one
+32 47.5 zero
+46 72.5 one
+25 40.0 zero
+59 90.5 one
+41 68.5 one
+30 45.0 zero
+52 81.5 one
+27 41.5 zero
+65 96.0 one
+39 57.0 zero
+44 70.5 one
+23 38.5 zero
+55 85.5 one
