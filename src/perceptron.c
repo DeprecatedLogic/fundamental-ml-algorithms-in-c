@@ -36,7 +36,7 @@
 #define MAX_PATH 256
 #define MAX_DELIM 16
 #define SUCCESS 0
-#define FAILURE 1
+#define FAILURE -1
 
 typedef struct
 {
@@ -648,6 +648,8 @@ error_cleanup:
 /**
  * @brief Makes a deep copy of a `Dataset` object.
  *
+ * @attention Labels are not copied because they are not used!
+ *
  * @param dataset A pointer to the `Dataset` object to copy.
  * @param number_of_features The number of features.
  *
@@ -658,35 +660,40 @@ Dataset *deep_copy_dataset(const Dataset *dataset, size_t number_of_features)
     Dataset *copy = calloc(1, sizeof(Dataset));
     if (copy == NULL)
     {
-        perror("[deep_copy_dataset] Failed to allocate memory for copy");
+        fprintf(stderr, "[deep_copy_dataset] Failed to allocate memory for copy\n");
         return NULL;
     }
 
-    copy->samples = (Sample*)malloc(dataset->number_of_samples * sizeof(Sample));
+    copy->samples = malloc(dataset->number_of_samples * sizeof(Sample));
     if (copy->samples == NULL)
     {
-        perror("[deep_copy_dataset] Failed to allocate memory for copy->samples");
+        fprintf(stderr, "[deep_copy_dataset] Failed to allocate memory for copy->samples\n");
         free_dataset(copy);
         return NULL;
     }
-    copy->number_of_samples = dataset->number_of_samples;
+    copy->number_of_samples = 0;
 
     for (size_t sample_index = 0; sample_index < dataset->number_of_samples; ++sample_index)
     {
-        copy->samples[sample_index].features = (double*)malloc(number_of_features * sizeof(double));
+        copy->samples[sample_index].features = malloc(number_of_features * sizeof(double));
         if (copy->samples[sample_index].features == NULL)
         {
-            perror("[deep_copy_dataset] Failed to allocate memory for copy->samples[sample_index].features");
+            fprintf(stderr, "[deep_copy_dataset] Failed to allocate memory for copy->samples[sample_index].features\n");
             free_dataset(copy);
             return NULL;
         }
-        copy->samples[sample_index].label = dataset->samples[sample_index].label;
-
+        
         for (size_t feature_index = 0; feature_index < number_of_features; ++feature_index)
         {
             copy->samples[sample_index].features[feature_index] = dataset->samples[sample_index].features[feature_index];
         }
+
+        copy->samples[sample_index].label = dataset->samples[sample_index].label;
+
+        ++copy->number_of_samples;
     }
+
+    if (global_args.debug) printf("[deep_copy_dataset] Successfully deep-copied dataset\n");
     return copy;
 }
 
@@ -695,7 +702,7 @@ Dataset *deep_copy_dataset(const Dataset *dataset, size_t number_of_features)
  *
  * @param perceptron Pointer to the perceptron whose weights/bias will be updated.
  * @param sample Pointer to the training sample that triggered the update.
- * @param error Signed error term: (label − prediction). Values are −1, 0, or +1.
+ * @param error Signed error term: (label − prediction). Values are −1, 0, or 1.
  */
 void update_parameters(Perceptron *perceptron, const Sample *sample, int error)
 {
@@ -714,7 +721,7 @@ void update_parameters(Perceptron *perceptron, const Sample *sample, int error)
  * @param perceptron Pointer to the trained (or partially trained) model.
  * @param sample Pointer to the input whose class you want to predict.
  *
- * @returns `1` if output is bigger or equal to 0, otherwise `0`.
+ * @returns `1` if output is greater than or equal to 0, otherwise `0`.
  */
 size_t compute_prediction(const Perceptron *perceptron, const Sample *sample)
 {
@@ -742,7 +749,7 @@ double *calculate_mean(const Dataset *dataset, size_t number_of_features)
     double *mean = calloc(number_of_features, sizeof(double));
     if (mean == NULL) // check
     {
-        perror("[calculate_mean] Failed allocating memory for `mean`.");
+        fprintf(stderr, "[calculate_mean] Failed allocating memory for `mean`.\n");
         return NULL;
     }
 
@@ -761,6 +768,7 @@ double *calculate_mean(const Dataset *dataset, size_t number_of_features)
         mean[feature_index] /= dataset->number_of_samples;
     }
 
+    if (global_args.debug) printf("[calculate_mean] Calculated mean successfully\n");
     return mean;
 }
 
@@ -803,24 +811,28 @@ double *calculate_std_deviation(const Dataset *dataset, const double *mean, size
         standard_deviation[feature_index] = sqrt(standard_deviation[feature_index] / dataset->number_of_samples);
     }
 
+    if (global_args.debug) printf("[calculate_std_deviation] Calculated standard deviation successfully\n");
     return standard_deviation;
 }
 
 /**
- * @brief Standardizes the features of the whole dataset.
+ * @brief Standardizes the features of the whole dataset and those of the new sample.
  *
- * x(standardized) = (x − μ) / σ
+ * x(standardized​) = (x − μ)​ / σ
  *
- * @attention Modifies all sample features in-place
+ * Modifies all sample features in-place  
+ * instead of returning a new `Sample` with the modified values.
  *
- * instead of returning a new `Sample pointer` with the modified values.
- *
- * Exits with an error message if a division by 0 occurs.
+ * @attention Exits with an error message if a division by 0 occurs.
  *
  * @param dataset A pointer to a `Dataset` object containing the array of samples and its count.
- * @param number_of_features The number of features.
+ * @param mean The mean value from the train dataset
+ * @param standard_deviation The standard deviation from the train dataset.
+ * @param number_of_features The number of features each sample has.
+ * 
+ * @returns SUCCESS if features get standardized, otherise FAILURE.
  */
-int standardize_data(Dataset *dataset, size_t number_of_features, double* mean, double *standard_deviation)
+int standardize_data(Dataset *dataset, size_t number_of_features, const double* mean, const double *standard_deviation)
 {
     // Check the number of samples because there's a division with it as denominator
     if (dataset->number_of_samples == 0)
@@ -848,6 +860,8 @@ int standardize_data(Dataset *dataset, size_t number_of_features, double* mean, 
             dataset->samples[sample_index].features[feature_index] = (x - mu) / std;
         }
     }
+
+    if (global_args.debug) printf("[standardize_data] Features standardized successfully\n");
     return SUCCESS;
 }
 
@@ -1123,6 +1137,36 @@ Args parse_args(int argc, char **argv)
     return args;
 }
 
+/**
+ * @brief Validates that a dataset adheres to the binary classification contract.
+ *
+ * Ensures the dataset contains exactly two unique labels. This is a critical
+ * guardrail for algorithms like the Perceptron, which mathematically require
+ * strictly binary targets (0 or 1) to function correctly.
+ *
+ * @param dataset Pointer to the Dataset structure to validate.
+ * @param dataset_name A descriptive string (e.g., "train", "test") used 
+ * for error reporting.
+ * @note If the validation fails, the function prints a descriptive error 
+ * message to stderr.
+ *
+ * @returns SUCCESS if valid, otherwise FAILURE.
+ */
+int validate_binary_dataset(const Dataset *dataset, const char *dataset_name)
+{
+    if (dataset->number_of_labels != 2)
+    {
+        fprintf(
+            stderr, 
+            ANSI_COLOR_RED "Error: Perceptron requires exactly 2 unique labels for binary classification (found %zu for %s dataset).\n" ANSI_COLOR_RESET, 
+            dataset->number_of_labels,
+            dataset_name
+        );
+        return FAILURE;
+    }
+    return SUCCESS;
+}
+
 int main(int argc, char *argv[])
 {
     global_args = parse_args(argc, argv);
@@ -1171,7 +1215,7 @@ int main(int argc, char *argv[])
         perceptron = (Perceptron*)malloc(sizeof(Perceptron));
         if (perceptron == NULL)
         {
-            perror("[main] Failed to allocate memory for perceptron");
+            fprintf(stderr, "[main] Failed to allocate memory for perceptron\n");
             return EXIT_FAILURE;
         }
 
@@ -1216,7 +1260,15 @@ int main(int argc, char *argv[])
         );
         if (train_dataset == NULL)
         {
+            fprintf(stderr, "[main] Failed to load dataset\n");
             free_perceptron(perceptron);
+            return EXIT_FAILURE;
+        }
+
+        if (validate_binary_dataset(train_dataset, "train") == FAILURE)
+        {
+            free_perceptron(perceptron);
+            free_dataset(train_dataset);
             return EXIT_FAILURE;
         }
 
@@ -1242,6 +1294,7 @@ int main(int argc, char *argv[])
             if (standardize_data(train_dataset, perceptron->number_of_features, 
                 perceptron->mean, perceptron->standard_deviation) == FAILURE)
             {
+                fprintf(stderr, "[main] Failed to standardize features in train_dataset\n");
                 free_perceptron(perceptron);
                 free_dataset(train_dataset);
                 return EXIT_FAILURE;
@@ -1266,7 +1319,7 @@ int main(int argc, char *argv[])
             for (size_t sample_index = 0; sample_index < train_dataset->number_of_samples; ++sample_index)
             {
                 Sample *sample = &train_dataset->samples[sample_index];
-                int error_value = compute_prediction(perceptron, sample); // error value
+                int error_value = compute_prediction(perceptron, sample);
                 update_parameters(
                     perceptron,
                     sample,
@@ -1320,25 +1373,50 @@ int main(int argc, char *argv[])
             return EXIT_FAILURE;
         }
 
+        if (validate_binary_dataset(test_dataset, "test") == FAILURE)
+        {
+            free_perceptron(perceptron);
+            free_dataset(test_dataset);
+            return EXIT_FAILURE;
+        }
+
         if (global_args.standardize)
         {
             if (standardize_data(test_dataset,perceptron->number_of_features,
                 perceptron->mean, perceptron->standard_deviation) == FAILURE)
             {
+                fprintf(stderr, "[main] Failed to standardize features in test_dataset\n");
                 free_perceptron(perceptron);
                 free_dataset(test_dataset);
                 return EXIT_FAILURE;
             }
         }
 
-        printf("\nComputing predictions...\n");
+        printf("\nRunning accuracy test...\n");
         size_t correct_guesses = 0;
+
         for (size_t sample_index = 0; sample_index < test_dataset->number_of_samples; ++sample_index)
         {
             Sample *sample = &test_dataset->samples[sample_index];
-            size_t output = compute_prediction(perceptron, sample);
-            printf("Guessed %s\n", (output == sample->label) ? "correctly" : "incorrectly");
-            correct_guesses += (output == sample->label) ? 1 : 0;
+            size_t output = compute_prediction(perceptron, sample); // 0 or 1
+
+            // Resolve the actual strings from their respective dictionaries
+            char *predicted_label_str = perceptron->labels[output];
+            char *actual_label_str = test_dataset->labels[sample->label];
+
+            bool is_correct = (strcmp(predicted_label_str, actual_label_str) == 0);
+            
+            printf(
+                "Guessed %s for sample %s%zu%s (Expected: %s, Predicted: %s)\n",
+                is_correct ? ANSI_COLOR_GREEN "correctly" ANSI_COLOR_RESET : ANSI_COLOR_RED "incorrectly" ANSI_COLOR_RESET,
+                ANSI_COLOR_MAGENTA,
+                sample_index,
+                ANSI_COLOR_RESET,
+                actual_label_str, 
+                predicted_label_str
+            );
+
+            correct_guesses += is_correct ? 1 : 0;
         }
         printf("\nModel accuracy: %.2f%%\n\n", (float)correct_guesses / test_dataset->number_of_samples * 100);
 
@@ -1377,6 +1455,7 @@ int main(int argc, char *argv[])
             if (standardize_data(unlabeled_dataset, perceptron->number_of_features,
                     perceptron->mean, perceptron->standard_deviation) == FAILURE)
             {
+                fprintf(stderr, "[main] Failed to standardize features in unlabeled_dataset\n");
                 free_perceptron(perceptron);
                 free_dataset(unlabeled_dataset);
                 return EXIT_FAILURE;
@@ -1390,10 +1469,15 @@ int main(int argc, char *argv[])
             Sample *sample = &unlabeled_dataset->samples[sample_index];
             sample->label = compute_prediction(perceptron, sample); // sample is unlabeled so the only label is what the algorithm predicts
             
-            if (sample->label < perceptron->number_of_labels) // weird if this wouldn't be true...
-                printf("Guessed %zu (%s)\n", sample->label, perceptron->labels[sample->label]);
-            else
-                printf("Guessed %zu\n", sample->label);
+            printf(
+                "Guessed %s%zu%s (%s%s%s)\n",
+                ANSI_COLOR_CYAN,
+                sample->label,
+                ANSI_COLOR_RESET,
+                ANSI_COLOR_BLUE,
+                perceptron->labels[sample->label],
+                ANSI_COLOR_RESET
+            );
         }
 
         if (strcmp(global_args.prediction_output_path, "") != 0) // Save
@@ -1429,7 +1513,7 @@ int main(int argc, char *argv[])
             fclose(file);
             printf("\nResults saved to file.\n\n");
         }
-        else printf("\nResults were discarded.\n\n");
+        else printf("\nResults were discarded.\n");
 
         free_dataset(unlabeled_dataset);
         free_dataset(unlabeled_dataset_copy);
