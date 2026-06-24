@@ -447,6 +447,7 @@ Dataset *read_data_from_file(
         Sample *temp_samples = (Sample *)realloc(dataset->samples, sizeof(Sample) * (dataset->number_of_samples + 1));
         if (temp_samples == NULL)
         {
+            fprintf(stderr, "[read_data_from_file] Failed to re-allocate memory for temp_samples\n");
             free_dataset(dataset);
             free(sample.features);
             fclose(data_file);
@@ -717,7 +718,11 @@ int train_node(Dataset *dataset, Node *root)
 {
     // Build an array with encoded label frequencies
     LabelFrequencies *lf = get_label_frequencies(dataset, root);
-    if (lf == NULL) return FAILURE;
+    if (lf == NULL)
+    {
+        fprintf(stderr, "[train_node] Failed to get label frequencies\n");
+        return FAILURE;
+    }
     
     // Find the majority label & number of non-zero labels
     size_t majority_encoded_label = 0;
@@ -891,6 +896,7 @@ int train_node(Dataset *dataset, Node *root)
     // Call train_node on both child nodes
     if (train_node(dataset, left) == FAILURE || train_node(dataset, right) == FAILURE)
     {
+        fprintf(stderr, "[train_node] Calling train_node() failed on at least one of the child nodes\n");
         return FAILURE; // propagate failure up the tree
     }
 
@@ -979,7 +985,11 @@ int predict_samples_in_dataset(const Dataset *dataset, const Node *root, const D
     if (strcmp(global_args.prediction_output_path, "") != 0)
     {
         out = fopen(global_args.prediction_output_path, "w");
-        if (out == NULL) return FAILURE;
+        if (out == NULL)
+        {
+            fprintf(stderr, "[predict_samples_in_dataset] Failed to open/create file: %s\n", global_args.prediction_output_path);
+            return FAILURE;
+        }
     }
 
     for (size_t sample_index = 0; sample_index < pred_dataset->number_of_samples; ++sample_index)
@@ -1134,7 +1144,7 @@ int save_model(const DecisionTree *model, const char *path)
     free(collection);
     fclose(model_file);
     if (global_args.debug) printf("[save_model] Collection memory freed and file closed\n");
-
+    
     return SUCCESS;
 }
 
