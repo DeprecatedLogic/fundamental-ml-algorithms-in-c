@@ -1,4 +1,4 @@
-# feature_1 feature_2 label
+# feature_1 feature_2 expected_label
 22 36.0 zero
 48 73.5 one
 37 54.5 zero
