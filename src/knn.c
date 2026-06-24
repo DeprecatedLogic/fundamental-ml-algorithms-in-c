@@ -403,6 +403,8 @@ Dataset *read_data_from_file(
 /**
  * @brief Makes a deep copy of a `Dataset` object.
  *
+ * @attention Labels are not copied because they are not used!
+ *
  * @param dataset A pointer to the `Dataset` object to copy.
  * @param number_of_features The number of features.
  *
@@ -417,26 +419,6 @@ Dataset *deep_copy_dataset(const Dataset *dataset, size_t number_of_features)
         return NULL;
     }
 
-    copy->labels = malloc(dataset->number_of_labels * sizeof(char*));
-    if (copy->labels == NULL)
-    {
-        fprintf(stderr, "[deep_copy_dataset] Failed to allocate memory for copy->labels\n");
-        free_dataset(copy);
-        return NULL;
-    }
-    for (size_t label_index = 0; label_index < dataset->number_of_labels; ++label_index)
-    {
-        char *temp = strdup(dataset->labels[label_index]);
-        if (temp == NULL)
-        {
-            fprintf(stderr, "[deep_copy_dataset] Failed to allocate memory for copy->labels\n");
-            free_dataset(copy);
-            return NULL;
-        }
-        copy->labels[label_index] = temp;
-        ++copy->number_of_labels;
-    }
-
     copy->samples = malloc(dataset->number_of_samples * sizeof(Sample));
     if (copy->samples == NULL)
     {
@@ -444,7 +426,7 @@ Dataset *deep_copy_dataset(const Dataset *dataset, size_t number_of_features)
         free_dataset(copy);
         return NULL;
     }
-    copy->number_of_samples = dataset->number_of_samples;
+    copy->number_of_samples = 0;
 
     for (size_t sample_index = 0; sample_index < dataset->number_of_samples; ++sample_index)
     {
@@ -462,6 +444,8 @@ Dataset *deep_copy_dataset(const Dataset *dataset, size_t number_of_features)
         }
         
         copy->samples[sample_index].encoded_label = dataset->samples[sample_index].encoded_label;
+
+        ++copy->number_of_samples;
     }
 
     if (global_args.debug) printf("[deep_copy_dataset] Successfully deep-copied dataset\n");
