@@ -1,4 +1,4 @@
-# feature_1 feature_2 expected_prediction
+# feature_1 feature_2 expected_label
 23 42.5 #0
 30 58.1 #1
 45 52.0 #0
