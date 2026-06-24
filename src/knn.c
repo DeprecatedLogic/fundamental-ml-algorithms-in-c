@@ -548,6 +548,8 @@ double *calculate_std_deviation(const Dataset *dataset, const double *mean, size
  * @param mean The mean value from the train dataset
  * @param standard_deviation The standard deviation from the train dataset.
  * @param number_of_features The number of features each sample has.
+ * 
+ * @returns SUCCESS if features get standardized, otherise FAILURE.
  */
 int standardize_data(Dataset *dataset, const double *mean, const double *standard_deviation, size_t number_of_features)
 {
@@ -1007,7 +1009,7 @@ int main(int argc, char *argv[])
 
     if (strcmp(global_args.acc_test_dataset_path, "") != 0)
     {
-        Dataset *dataset_test = read_data_from_file(
+        Dataset *test_dataset = read_data_from_file(
             global_args.acc_test_dataset_path,
             global_args.number_of_features,
             true,
@@ -1015,7 +1017,7 @@ int main(int argc, char *argv[])
             global_args.decimals_delimiter,
             global_args.comment_delimiter
         );
-        if (dataset_test == NULL)
+        if (test_dataset == NULL)
         {
             fprintf(stderr, "[main] Failed to load test dataset\n");
             free(standard_deviation);
@@ -1025,10 +1027,10 @@ int main(int argc, char *argv[])
         }
         if (global_args.standardize)
         {
-            if (standardize_data(dataset_test, mean, standard_deviation, global_args.number_of_features) == FAILURE)
+            if (standardize_data(test_dataset, mean, standard_deviation, global_args.number_of_features) == FAILURE)
             {
-                fprintf(stderr, "[main] Failed to standardize features in dataset_test\n");
-                free_dataset(dataset_test);
+                fprintf(stderr, "[main] Failed to standardize features in test_dataset\n");
+                free_dataset(test_dataset);
                 free(standard_deviation);
                 free(mean);
                 free_dataset(dataset);
@@ -1048,16 +1050,16 @@ int main(int argc, char *argv[])
         {
             printf("\nTesting with K=%zu (max K: %zu)\n\n", temp_K, max_K);
 
-            for (size_t sample_index = 0; sample_index < dataset_test->number_of_samples; ++sample_index)
+            for (size_t sample_index = 0; sample_index < test_dataset->number_of_samples; ++sample_index)
             {
                 Dataset *neighbors = get_K_nearest_neighbors(
-                    dataset, &dataset_test->samples[sample_index],
+                    dataset, &test_dataset->samples[sample_index],
                     global_args.number_of_features, temp_K
                 );
                 if (neighbors == NULL)
                 {
                     fprintf(stderr, "[main] Failed to get K nearest neighbors\n");
-                    free_dataset(dataset_test);
+                    free_dataset(test_dataset);
                     free(standard_deviation);
                     free(mean);
                     free_dataset(dataset);
@@ -1069,14 +1071,14 @@ int main(int argc, char *argv[])
                 {
                     fprintf(stderr, "[main] Failed to classify samples from test dataset (sample_index: %zu)\n", sample_index);
                     free_dataset(neighbors);
-                    free_dataset(dataset_test);
+                    free_dataset(test_dataset);
                     free(standard_deviation);
                     free(mean);
                     free_dataset(dataset);
                     return EXIT_FAILURE;
                 }
                 char *predicted_label = dataset->labels[predicted_encoded_label];
-                char *test_label = dataset_test->labels[dataset_test->samples[sample_index].encoded_label];
+                char *test_label = test_dataset->labels[test_dataset->samples[sample_index].encoded_label];
 
                 bool is_correct = (strcmp(test_label, predicted_label) == 0);
                 correct_predictions += is_correct ? 1 : 0;
@@ -1094,7 +1096,7 @@ int main(int argc, char *argv[])
                 free_dataset(neighbors);
             }
 
-            printf("\n\nAccuracy with K=%zu: %0.2f%%\n\n", temp_K, (float)correct_predictions / dataset_test->number_of_samples * 100);
+            printf("\n\nAccuracy with K=%zu: %0.2f%%\n\n", temp_K, (float)correct_predictions / test_dataset->number_of_samples * 100);
             correct_predictions = 0;
 
             if (temp_K <= max_K)
@@ -1124,7 +1126,7 @@ int main(int argc, char *argv[])
 
         } while (retry || temp_K <= max_K);
 
-        free_dataset(dataset_test);
+        free_dataset(test_dataset);
     }
 
     if (strcmp(global_args.prediction_dataset_path, "") != 0 || global_args.manual_samples)
@@ -1215,7 +1217,7 @@ int main(int argc, char *argv[])
             unlabeled_dataset_copy = deep_copy_dataset(unlabeled_dataset, global_args.number_of_features);
             if (standardize_data(unlabeled_dataset, mean, standard_deviation, global_args.number_of_features) == FAILURE)
             {
-                fprintf(stderr, "[main] Failed to standardize features in dataset_test\n");
+                fprintf(stderr, "[main] Failed to standardize features in unlabeled_dataset\n");
                 free_dataset(unlabeled_dataset);
                 free(standard_deviation);
                 free(mean);
