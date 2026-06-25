@@ -12,7 +12,10 @@ This project is a practical deep-dive into the "black box" of AI, proving that y
 * **KNN**: A lazy learner that classifies data based on proximity.
 * **K-Means**: An unsupervised clustering algorithm that supports automatic K detection via the Elbow Method.
 * **Perceptron**: A binary classifier powered by the perceptron update rule, complete with model saving/loading and adjustable learning rates.
-* **Decision Tree**: A hierarchical classifier featuring custom file parsing, binary serialization, and console-based tree visualization.  
+* **Decision Tree**: A hierarchical classifier featuring custom file parsing, binary serialization, and console-based tree visualization.
+
+These implementations still have plenty of room for improvement in terms of performance and code cleanliness. I'm aware of it.  
+But at some point you have to stop optimizing, accept the existence of questionable decisions, and move on before the project evolves into a lifelong commitment...
 
 ## How to Run
 Everything is built for a standard C environment.
