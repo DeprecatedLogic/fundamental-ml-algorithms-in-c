@@ -5,15 +5,9 @@
  *  Created     :  03 Jul 2025
  *
  *  Description :
- *      A simple implementation of the Perceptron algorithm for binary
+ *      An implementation of the Perceptron algorithm for binary
  *      classification using supervised learning.
  *====================================================================*/
-
-// todo:
-// - initialize mean and std in main, use that when standardizing other datasets.
-// - store the mean and std values when saving the model, update load function accordingly.
-// - return NULL or an integer instead of stopping the program mid-function,
-//   to free allocated memory manually.
 
 #include <stddef.h>
 #include <stdio.h>
@@ -30,7 +24,7 @@
 #define ANSI_COLOR_MAGENTA "\x1b[35m"
 #define ANSI_COLOR_CYAN    "\x1b[36m"
 #define ANSI_COLOR_RESET   "\x1b[0m"
-#define CMD_PRINT(ANSI_COLOR, PROGRAM_NAME, ARGS) printf("~>%s %s %s %s\n", ANSI_COLOR, PROGRAM_NAME, ARGS, ANSI_COLOR_RESET)
+#define CMD_PRINT(ANSI_COLOR, PROGRAM_NAME, ARGS) printf("~>  %s %s %s %s\n", ANSI_COLOR, PROGRAM_NAME, ARGS, ANSI_COLOR_RESET)
 
 #define MAX_WEIGHTS 64
 #define MAX_PATH 256

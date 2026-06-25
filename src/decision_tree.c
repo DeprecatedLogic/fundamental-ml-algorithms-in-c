@@ -5,8 +5,8 @@
  *  Created     :  03 Mar 2026
  *
  *  Description :
- *      A simple implementation of the Perceptron algorithm for binary
- *      classification using supervised learning.
+ *      An implementation of the Decision Tree algorithm,
+ *      a hierarchical classifier.
  *====================================================================*/
 
 #include <math.h>

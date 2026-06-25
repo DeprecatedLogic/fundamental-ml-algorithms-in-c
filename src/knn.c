@@ -25,7 +25,7 @@
 #define ANSI_COLOR_MAGENTA "\x1b[35m"
 #define ANSI_COLOR_CYAN    "\x1b[36m"
 #define ANSI_COLOR_RESET   "\x1b[0m"
-#define CMD_PRINT(ANSI_COLOR, PROGRAM_NAME, ARGS) printf("~>%s %s %s %s\n", ANSI_COLOR, PROGRAM_NAME, ARGS, ANSI_COLOR_RESET)
+#define CMD_PRINT(ANSI_COLOR, PROGRAM_NAME, ARGS) printf("~>  %s %s %s %s\n", ANSI_COLOR, PROGRAM_NAME, ARGS, ANSI_COLOR_RESET)
 
 #define MAX_PATH 256
 #define MAX_DELIM 16
@@ -820,7 +820,7 @@ void print_usage_examples(const char* program_name)
 
     printf("\nNotes:\n");
     printf("- Options order does not matter.\n");
-    printf("- Combine multiple options as needed (e.g., training + standardization + elbow method).\n");
+    printf("- Combine multiple options as needed (e.g., training + standardization + accuracy test).\n");
 }
 
 void print_usage(const char *program_name)
