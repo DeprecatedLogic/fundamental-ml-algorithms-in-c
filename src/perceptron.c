@@ -749,7 +749,7 @@ double *calculate_mean(const Dataset *dataset, size_t number_of_features)
     double *mean = calloc(number_of_features, sizeof(double));
     if (mean == NULL) // check
     {
-        fprintf(stderr, "[calculate_mean] Failed allocating memory for `mean`.\n");
+        fprintf(stderr, "[calculate_mean] Failed allocating memory for mean\n");
         return NULL;
     }
 
@@ -800,7 +800,6 @@ double *calculate_std_deviation(const Dataset *dataset, const double *mean, size
         {
             double diff = dataset->samples[sample_index].features[feature_index] - mean[feature_index];
             standard_deviation[feature_index] += diff * diff;
-            // PS: pow() would've been slower :P
         }
     }
 
@@ -837,7 +836,7 @@ int standardize_data(Dataset *dataset, size_t number_of_features, const double* 
     // Check the number of samples because there's a division with it as denominator
     if (dataset->number_of_samples == 0)
     {
-        perror("[standardize_data] Failed to standardize data. \
+        fprintf(stderr, "[standardize_data] Failed to standardize data. \
             No data was found ? Avoided division by 0");
         return FAILURE;
     }
