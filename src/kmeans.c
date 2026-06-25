@@ -26,7 +26,7 @@
 #define ANSI_COLOR_MAGENTA "\x1b[35m"
 #define ANSI_COLOR_CYAN    "\x1b[36m"
 #define ANSI_COLOR_RESET   "\x1b[0m"
-#define CMD_PRINT(ANSI_COLOR, PROGRAM_NAME, ARGS) printf("~>%s %s %s %s\n", ANSI_COLOR, PROGRAM_NAME, ARGS, ANSI_COLOR_RESET)
+#define CMD_PRINT(ANSI_COLOR, PROGRAM_NAME, ARGS) printf("~>  %s %s %s %s\n", ANSI_COLOR, PROGRAM_NAME, ARGS, ANSI_COLOR_RESET)
 
 #define MAX_PATH 256
 #define MAX_DELIM 16
@@ -38,12 +38,11 @@ typedef struct
     char dataset_path[MAX_PATH]; // Dataset file path
     size_t number_of_features; // Number of features per sample (default: 1)
     double tolerance; // Minimum value for a centroid's movement to be recognized (default: 0.001)
-    size_t restarts; // Higher accuracy but slower (default: 5)
+    size_t restarts; // Higher accuracy but slower (default: 0)
     size_t K; // Start algorithm at K_begin value (default: 1)
     size_t K_end;  // End algorithm at K_end value (default: 10)
     double drop_threshold; // Difference between the inertia values of K-1 and K, used with elbow method (default: 0.1 meaning 10%)
     bool standardize; // Standardize all sample features (false by default)
-    // todo: enter a path instead of a predefined file name for the output/results ?
     bool save_output; // Save output in current directory as 'output.txt' (false by default) 
     bool use_elbow_method; // Use the elbow method to find the most optimal K (false by default)
     bool force_reach_K; // Continue until reaching the max K desired, used with elbow method (false by default)
@@ -131,16 +130,44 @@ bool is_number(char *number, char decimals_delimiter)
     return true;
 }
 
+/**
+ * @brief Reads sample data from a delimited text file and constructs a Dataset.
+ *
+ * Parses a file line by line, skipping comments and empty lines. It handles BOM 
+ * stripping and tokenizes the features using the provided delimiter.
+ *
+ * @param file_path The path to the dataset file.
+ * @param number_of_features The expected number of features per sample.
+ * @param token_delimiter The string used to separate features/labels.
+ * @param decimals_delimiter The character used for decimals in floating-point numbers.
+ * @param comment_delimiter The string that marks the start of a comment.
+ *
+ * @returns A pointer to the allocated Dataset, or NULL if an error occurs.
+ */
 Dataset *read_data_from_file(
     const char *file_path, size_t number_of_features,
     char *token_delimiter, char decimals_delimiter, char *comment_delimiter
 )
 {
-    if (token_delimiter == NULL) strcpy(token_delimiter, " ");
-    if (comment_delimiter == NULL) strcpy(comment_delimiter, "#");
-    if (strcmp(comment_delimiter, comment_delimiter) == 1)
+    if (global_args.debug) printf("[read_data_from_file] Reading data from file: %s\n", file_path);
+
+    if (strcmp(token_delimiter, comment_delimiter) == 0)
     {
-        fprintf(stderr, "[read_data_from_file] An error occured, the delimiter cannot be `%s`\n", comment_delimiter);
+        fprintf(
+            stderr,
+            "[read_data_from_file] An error occured, token and comment delimiters cannot be the same (Token:%s | Comment:%s)\n",
+            token_delimiter,
+            comment_delimiter
+        );
+        return NULL;
+    }
+    if (token_delimiter[0] == decimals_delimiter || comment_delimiter[0] == decimals_delimiter)
+    {
+        fprintf(
+            stderr,
+            "[read_data_from_file] An error occured, token/comment delimiter cannot be the same as the decimals delimiter (%c)\n",
+            decimals_delimiter
+        );
         return NULL;
     }
 
@@ -154,7 +181,7 @@ Dataset *read_data_from_file(
     Dataset *dataset = (Dataset *)calloc(1, sizeof(Dataset));
     if (dataset == NULL)
     {
-        perror("[read_data_from_file] Failed to allocate memory for dataset\n");
+        fprintf(stderr, "[read_data_from_file] Failed to allocate memory for dataset\n");
         fclose(data_file);
         return NULL;
     }
@@ -168,10 +195,19 @@ Dataset *read_data_from_file(
     bool bom_checked = false;
     while(fgets(line, (int)(line_size), data_file))
     {
+        if (strchr(line, '\n') == NULL && !feof(data_file))
+        {
+            fprintf(stderr, "[read_data_from_file] Line %zu is too long\n", line_number);
+            free_dataset(dataset);
+            fclose(data_file);
+            return NULL;
+        }
+
         if (!bom_checked)
         {
             unsigned char *p_line = (unsigned char *)line;
-            if (p_line[0] == 0xEF && p_line[1] == 0xBB && p_line[2] == 0xBF)
+            
+            if (strlen(line) >= 3 && p_line[0] == 0xEF && p_line[1] == 0xBB && p_line[2] == 0xBF)
                 memmove(line, line + 3, strlen(line + 3) + 1);
             
             bom_checked = true;
@@ -179,17 +215,31 @@ Dataset *read_data_from_file(
         
         if (strncmp(line, comment_delimiter, strlen(comment_delimiter)) == 0)
         {
-            if (global_args.debug) printf("[read_data_from_file] Line %zu skipped (fully commented line)\n", line_number++);
+            if (global_args.debug) printf("[read_data_from_file] Line %zu skipped (fully commented line)\n", line_number);
+            ++line_number;
             continue;
         }
 
         char *uncommented_line = strtok(line, comment_delimiter);
         
-        // Strip newline
-        uncommented_line[strcspn(uncommented_line, "\r\n")] = '\0';
-        if (uncommented_line == NULL || *uncommented_line == '\0')
+        // Empty line
+        if (uncommented_line == NULL)
         {
             if (global_args.debug) printf("[read_data_from_file] Line %zu skipped (empty line)\n", line_number);
+            ++line_number;
+            continue;
+        }
+        
+        // Strip newline
+        uncommented_line[strcspn(uncommented_line, "\r\n")] = '\0';
+
+        // Skip leading whitespace
+        while (*uncommented_line == ' ' || *uncommented_line == '\t') ++uncommented_line;
+
+        if (*uncommented_line == '\0')
+        {
+            if (global_args.debug) printf("[read_data_from_file] Line %zu skipped (whitespace-only line)\n", line_number);
+            ++line_number;
             continue;
         }
 
@@ -204,7 +254,7 @@ Dataset *read_data_from_file(
         };
         if (sample.features == NULL)
         {
-            perror("[read_data_from_file] Failed to allocate memory for sample.features\n");
+            fprintf(stderr, "[read_data_from_file] Failed to allocate memory for sample.features\n");
             free_dataset(dataset);
             fclose(data_file);
             return NULL;
@@ -225,8 +275,9 @@ Dataset *read_data_from_file(
                 {
                     fprintf(
                         stderr,
-                        "[read_data_from_file] Encoutered a bad sample at line '%zu' (feature value is not a number ?)\n",
-                        line_number
+                        "[read_data_from_file] Encoutered a bad sample at line '%zu' (feature value '%s' is not a number ?)\n",
+                        line_number,
+                        token_buffer
                     );
                     free_dataset(dataset);
                     free(sample.features);
@@ -239,6 +290,7 @@ Dataset *read_data_from_file(
             token_buffer = strtok(NULL, token_delimiter);
             ++token_counter;
         }
+
         if (token_counter != number_of_features)
         {
             fprintf(
@@ -259,7 +311,11 @@ Dataset *read_data_from_file(
         {
             fprintf(stderr, "[read_data_from_file] Failed to re-allocate memory for temp_samples\n");
             free_dataset(dataset);
+            free(sample.features);
+            fclose(data_file);
+            return NULL;
         }
+
         dataset->samples = temp_samples;
         dataset->samples[dataset->number_of_samples] = sample;
         ++dataset->number_of_samples;
@@ -278,7 +334,7 @@ Dataset *read_data_from_file(
  * @param dataset A pointer to a `Dataset` object containing the array of samples and its count.
  * @param number_of_features The number of features.
  *
- * @returns An array containing the mean value of each feature.
+ * @returns An array containing the mean value of each feature, or NULL if an error occurs.
  */
 double *calculate_mean(const Dataset *dataset, size_t number_of_features)
 {
@@ -286,7 +342,7 @@ double *calculate_mean(const Dataset *dataset, size_t number_of_features)
     double *mean = calloc(number_of_features, sizeof(double));
     if (mean == NULL) // check
     {
-        perror("[calculate_mean] Failed to allocate memory for mean & initialize all members to 0\n");
+        fprintf(stderr, "[calculate_mean] Failed to allocate memory for mean\n");
         return NULL;
     }
 
@@ -315,7 +371,7 @@ double *calculate_mean(const Dataset *dataset, size_t number_of_features)
  * @param mean An array containing the standard deviation of each feature.
  * @param number_of_features The number of features.
  *
- * @returns An array containing the standard deviation of every feature.
+ * @returns An array containing the standard deviation of every feature, or NULL if an error occurs.
  */
 double *calculate_std_deviation(const Dataset *dataset, const double *mean, size_t number_of_features)
 {
@@ -323,7 +379,7 @@ double *calculate_std_deviation(const Dataset *dataset, const double *mean, size
     double *standard_deviation = calloc(number_of_features, sizeof(double));
     if (standard_deviation == NULL) // check
     {
-        perror("[calculate_std_deviation] Failed to allocate memory for standard_deviation & initialize all members to 0\n");
+        fprintf(stderr, "[calculate_std_deviation] Failed to allocate memory for standard_deviation & initialize all members to 0\n");
         return NULL;
     }
 
@@ -334,15 +390,17 @@ double *calculate_std_deviation(const Dataset *dataset, const double *mean, size
         {
             double diff = dataset->samples[sample_index].features[feature_index] - mean[feature_index];
             standard_deviation[feature_index] += diff * diff;
-            // pow() would've been slower :P
         }
     }
+
     // Finally, divide each value by the number of samples to get the variance
     // and then use `sqrt` to get the standard deviation
     for (size_t feature_index = 0; feature_index < number_of_features; ++feature_index)
     {
         standard_deviation[feature_index] = sqrt(standard_deviation[feature_index] / dataset->number_of_samples);
     }
+
+    if (global_args.debug) printf("[calculate_std_deviation] Calculated standard deviation successfully\n");
     return standard_deviation;
 }
 
@@ -369,26 +427,28 @@ double calculate_euclidian_distance(const Sample *sample1, const Sample *sample2
 }
 
 /**
- * @brief Standardizes the features of the whole dataset.
+ * @brief Standardizes the features of the whole dataset and those of the new sample.
  *
  * x(standardized​) = (x − μ)​ / σ
  *
- * @note Modifies all sample features in-place
+ * Modifies all sample features in-place  
  * instead of returning a new `Sample` with the modified values.
  *
- * Exits with an error message if a division by 0 occurs.
- *
- * Stores max and min feature values.
+ * @attention Exits with an error message if a division by 0 occurs.
  *
  * @param dataset A pointer to a `Dataset` object containing the array of samples and its count.
- * @param number_of_features The number of features.
+ * @param mean The mean value from the train dataset
+ * @param standard_deviation The standard deviation from the train dataset.
+ * @param number_of_features The number of features each sample has.
+ * 
+ * @returns SUCCESS if all features get standardized, otherwise FAILURE.
  */
 int standardize_data(Dataset *dataset, const double *mean, const double *standard_deviation, size_t number_of_features)
 {
     // Check size because there's a division with size as denominator
     if (dataset->number_of_samples == 0)
     {
-        perror("[standardize_data] Failed to standardize data. Avoided division by 0 (no data found ?)\n");
+        fprintf(stderr, "[standardize_data] Failed to standardize data. Avoided division by 0 (no data found ?)\n");
         return FAILURE;
     }
 
@@ -428,6 +488,7 @@ int standardize_data(Dataset *dataset, const double *mean, const double *standar
         }
     }
 
+    if (global_args.debug) printf("[standardize_data] Features standardized successfully\n");
     return SUCCESS;
 }
 
@@ -473,7 +534,7 @@ size_t find_nearest_point(const Sample *sample, const Dataset *dataset, size_t n
 size_t find_farthest_sample(const Sample *sample, const Dataset *dataset, size_t number_of_features)
 {
     // The index of the farthest sample in the samples array
-    size_t farthest_point_index = dataset->number_of_samples;
+    size_t farthest_point_index = 0;
     double farthest_point_distance = -__DBL_MAX__;
 
     for (size_t sample_index = 0; sample_index < dataset->number_of_samples; ++sample_index)
@@ -498,14 +559,14 @@ size_t find_farthest_sample(const Sample *sample, const Dataset *dataset, size_t
  * @param centroids A pointer to a `Dataset` object containing the array of centroids and its count.
  * @param number_of_features The number of features.
  *
- * @returns The total inertia value for the desired number of centroids (K).
+ * @returns The total inertia value for the desired number of centroids (K), or NULL if an error occurs.
  */
 double *calculate_inertia(const Dataset *dataset, const Dataset *centroids, size_t number_of_features)
 {
     double *inertia_per_centroid = calloc(centroids->number_of_samples, sizeof(double));
     if (inertia_per_centroid == NULL)
     {
-        perror("[calculate_inertia] Failed to allocate memory for inertia_per_centroid & initialize all members to 0\n");
+        fprintf(stderr, "[calculate_inertia] Failed to allocate memory for inertia_per_centroid\n");
         return NULL;
     }
 
@@ -536,14 +597,14 @@ double *calculate_inertia(const Dataset *dataset, const Dataset *centroids, size
 }
 
 /**
- * @brief Re-initializes 0-sample centroids by giving them a random features.
+ * @brief Re-initializes 0-sample centroids.
  *
  * @param dataset A pointer to a `Dataset` object containing the array of samples and its count.
  * @param centroids A pointer to a `Dataset` object containing the array of centroids and its count.
  * @param samples_per_centroid An array of integers containing the number of samples assigned to each centroid.
  * @param number_of_features The number of features.
  *
- * @returns The number of centroids that got 'revived'.
+ * @returns SUCCESS if no error occurs, otherwise FAILURE.
  *
  * @note This forces the data to be split into K clusters,
  * exactly as indicated by the user. From my POV, the best option is to randomize
@@ -559,7 +620,7 @@ int handle_empty_centroids(Dataset *dataset, const Dataset *centroids, size_t *s
     {
         if (samples_per_centroid[centroid_index] == 0)
         {
-            /* Centroid Randomization
+            /* Randomize Centroid's position
             for (int feature_index = 0; feature_index < number_of_features; ++feature_index)
             {
                 centroids->samples[centroid_index].features[feature_index] = (double)drand48();
@@ -602,8 +663,7 @@ int handle_empty_centroids(Dataset *dataset, const Dataset *centroids, size_t *s
             Sample **cluster_samples = calloc(samples_per_centroid[highest_inertia_index], sizeof(Sample *));
             if (cluster_samples == NULL)
             {
-                perror("[handle_empty_centroids] Failed to allocate memory for cluster_samples\n");
-                free(inertia_per_centroid);
+                fprintf(stderr, "[handle_empty_centroids] Failed to allocate memory for cluster_samples\n");
                 return FAILURE;
             }
             size_t cluster_count = 0;
@@ -628,7 +688,8 @@ int handle_empty_centroids(Dataset *dataset, const Dataset *centroids, size_t *s
             ++samples_per_centroid[centroid_index];
 
             ++revived;
-            free(cluster_samples);  // Free just the array of pointers, using free_dataset() frees features too!
+            // Free just the array of Sample pointers, not their features!
+            free(cluster_samples);
         }
     }
     *out_revived_count = revived;
@@ -643,7 +704,7 @@ int handle_empty_centroids(Dataset *dataset, const Dataset *centroids, size_t *s
  * @param number_of_features The number of features.
  * @param threshold The minimum amount of distance the new centroid's features should be for it to move .
  *
- * @returns The number of centroids that have changed features (>threshold).
+ * @returns SUCCESS if no error occurs, otherwise FAILURE.
  *
  * @note `threshold` should be between 0 and 1.
  */
@@ -652,7 +713,7 @@ int adjust_centroids(const Dataset *dataset, Dataset *centroids, size_t number_o
     Dataset *samples_per_centroid = calloc(centroids->number_of_samples, sizeof(Dataset));
     if (samples_per_centroid == NULL)
     {
-        perror("[adjust_centroids] Failed to allocate memory for samples_per_centroid & initialize all members to 0\n");
+        fprintf(stderr, "[adjust_centroids] Failed to allocate memory for samples_per_centroid & initialize all members to 0\n");
         return FAILURE;
     }
 
@@ -674,7 +735,7 @@ int adjust_centroids(const Dataset *dataset, Dataset *centroids, size_t number_o
         Sample *temp_samples = realloc(samples_per_centroid[centroid_index].samples, (samples_per_centroid[centroid_index].number_of_samples + 1) * sizeof(Sample));
         if (temp_samples == NULL)
         {
-            perror("[adjust_centroids] Failed to re-allocate memory for samples_per_centroid[centroid_index].samples\n");
+            fprintf(stderr, "[adjust_centroids] Failed to re-allocate memory for samples_per_centroid[centroid_index].samples\n");
             free_dataset(samples_per_centroid);
             return FAILURE;
         }
@@ -695,6 +756,7 @@ int adjust_centroids(const Dataset *dataset, Dataset *centroids, size_t number_o
         new_centroid_position.features = calculate_mean(&samples_per_centroid[centroid_index], number_of_features);
         if (new_centroid_position.features == NULL)
         {
+            fprintf(stderr, "[adjust_centroids] Failed to calculate mean value for each feature\n");
             // Do NOT free the actual samples (features) used by the main Dataset!
             free(samples_per_centroid[centroid_index].samples);
             free(samples_per_centroid);
@@ -714,11 +776,10 @@ int adjust_centroids(const Dataset *dataset, Dataset *centroids, size_t number_o
             new_centroid_position.features = NULL;
         }
 
-        // Free the top-level pointer for samples
-        free(samples_per_centroid[centroid_index].samples); // Do NOT free the actual samples used by the main Dataset!
+        // Free only the samples pointer
+        free(samples_per_centroid[centroid_index].samples);
     }
-
-    // Finally, free the top-level pointer
+    // Finally, free the Dataset pointer
     free(samples_per_centroid);
 
     *out_centroids_adjusted = adjustements;
@@ -732,20 +793,20 @@ int adjust_centroids(const Dataset *dataset, Dataset *centroids, size_t number_o
  * @param centroids A pointer to a `Dataset` object containing the array of centroids and its count.
  * @param number_of_features The number of features.
  *
- * @returns The number of samples assigned to each centroid.
+ * @returns The number of samples assigned to each centroid, or NULL if an error occurs.
  */
 size_t *assign_centroid_to_samples(Dataset *dataset, const Dataset *centroids, size_t number_of_features)
 {
     if (centroids->number_of_samples == 0)
     {
-        perror("[assign_centroid_to_samples] Centroids' size is 0. Cannot assign any samples\n");
+        fprintf(stderr, "[assign_centroid_to_samples] Centroids' size is 0, cannot assign any samples\n");
         return NULL;
     }
 
     size_t *samples_per_centroid = calloc(centroids->number_of_samples, sizeof(size_t));
     if (samples_per_centroid == NULL)
     {
-        perror("[assign_centroid_to_samples] Failed to allocate memory for samples_per_centroid & initialize all members to 0\n");
+        fprintf(stderr, "[assign_centroid_to_samples] Failed to allocate memory for samples_per_centroid\n");
         return NULL;
     }
 
@@ -784,12 +845,14 @@ void output_all_sample_features(const Dataset *dataset, size_t number_of_feature
 }
 
 /**
- * @brief Outputs the distance difference after the centroids were adjusted.
+ * @brief Outputs the change in distance after the centroids were adjusted.
  *
  * @param centroids A pointer to a `Dataset` object containing the array of centroids and its count.
  * @param old_centroids A pointer to a `Dataset` object containing the array of centroids at their older state and its count.
  * @param samples_per_centroid The number of samples assigned to each centroid.
  * @param number_of_features The number of features.
+ *
+ * @returns SUCCESS if file opens, otherwise FAILURE.
  *
  * @note I wrote this for easier debugging...
  *
@@ -809,7 +872,7 @@ int output_centroids(const Dataset *centroids, const Dataset *old_centroids, con
         fprintf(file, "K-Means Iteration Output for K=%zu:\n", centroids->number_of_samples);
     }
 
-    printf("\n### OUTPUT ###\n");
+    if (global_args.debug) printf("\n### OUTPUT ###\n");
     if (save_output) fprintf(file, "\n### OUTPUT ###\n");
 
     for (size_t centroid_index = 0; centroid_index < centroids->number_of_samples; ++centroid_index)
@@ -820,14 +883,14 @@ int output_centroids(const Dataset *centroids, const Dataset *old_centroids, con
             number_of_features
         ) : 0;
 
-        printf("\n[Centroid %zu] Features:\n", centroid_index);
+        if (global_args.debug) printf("\n[Centroid %zu] Features:\n", centroid_index);
         if (save_output) fprintf(file, "\n[Centroid %zu] Features:\n", centroid_index);
 
         for (size_t feature_index = 0; feature_index < number_of_features; ++feature_index)
         {
             if (old_centroids != NULL)
             {
-                printf(
+                if (global_args.debug) printf(
                     "- Feature %zu: %g (old) -> %g (new)\n",
                     feature_index,
                     old_centroids->samples[centroid_index].features[feature_index],
@@ -843,7 +906,7 @@ int output_centroids(const Dataset *centroids, const Dataset *old_centroids, con
             }
             else
             {
-                printf(
+                if (global_args.debug) printf(
                     "- Feature %zu: %g\n",
                     feature_index,
                     centroids->samples[centroid_index].features[feature_index]
@@ -859,16 +922,16 @@ int output_centroids(const Dataset *centroids, const Dataset *old_centroids, con
 
         if (samples_per_centroid != NULL)
         {
-            printf("\nSamples assigned: %zu\n", samples_per_centroid[centroid_index]);
+            if (global_args.debug) printf("\nSamples assigned: %zu\n", samples_per_centroid[centroid_index]);
             if (save_output) fprintf(file, "\nSamples assigned: %zu\n", samples_per_centroid[centroid_index]);
         }
         if (old_centroids != NULL)
         {
-            printf("\n- Distance difference: %g\n\n", distance);
+            if (global_args.debug) printf("\n- Distance difference: %g\n\n", distance);
             if (save_output) fprintf(file, "\n- Distance difference: %g\n\n", distance);
         }
     }
-    printf("\n");
+    if (global_args.debug) printf("\n");
     if (file != NULL)
     {
         fprintf(file, "\n\n\n");
@@ -884,36 +947,37 @@ int output_centroids(const Dataset *centroids, const Dataset *old_centroids, con
  * @param source A pointer to a `Dataset` object which will be cloned.
  * @param number_of_features The number of features.
  *
- * @returns A pointer to a `Dataset` object, a clone of `source`.
+ * @returns A pointer to a `Dataset` object, a clone of `source`, or NULL if an error occurs.
  */
 Dataset *clone_dataset_object(const Dataset *source, size_t number_of_features)
 {
-    Dataset *destination = malloc(sizeof(Dataset));
-    if (destination == NULL)
+    Dataset *copy = malloc(sizeof(Dataset));
+    if (copy == NULL)
     {
-        perror("[clone_dataset_object] Failed to allocate memory for destination\n");
+        fprintf(stderr, "[clone_dataset_object] Failed to allocate memory for copy\n");
         return NULL;
     }
-    destination->number_of_samples = source->number_of_samples;
-    destination->samples = malloc(destination->number_of_samples * sizeof(Sample));
+    copy->number_of_samples = source->number_of_samples;
+    copy->samples = malloc(copy->number_of_samples * sizeof(Sample));
 
-    for (size_t sample_index = 0; sample_index < destination->number_of_samples; ++sample_index) {
+    for (size_t sample_index = 0; sample_index < copy->number_of_samples; ++sample_index) {
 
-        destination->samples[sample_index].features = malloc(number_of_features * sizeof(double));
-        if (destination->samples[sample_index].features == NULL)
+        copy->samples[sample_index].features = malloc(number_of_features * sizeof(double));
+        if (copy->samples[sample_index].features == NULL)
         {
-            fprintf(stderr, "[clone_dataset_object] Failed to allocate memory for destination->samples[%zu].features\n", sample_index);
-            free_dataset(destination);
+            fprintf(stderr, "[clone_dataset_object] Failed to allocate memory for copy->samples[%zu].features\n", sample_index);
+            free_dataset(copy);
             return NULL;
         }
 
-        memcpy(destination->samples[sample_index].features,
+        memcpy(copy->samples[sample_index].features,
                source->samples[sample_index].features,
                number_of_features * sizeof(double));
 
-        destination->samples[sample_index].centroid = NULL; // not used
+        copy->samples[sample_index].centroid = NULL; // not used
     }
-    return destination;
+
+    return copy;
 }
 
 /**
@@ -922,20 +986,20 @@ Dataset *clone_dataset_object(const Dataset *source, size_t number_of_features)
  * @param number_of_features The number of features (dimensions) for each centroid.
  * @param K The number of centroids to create.
  *
- * @returns A`Dataset`object containing K randomly initialized centroids.
+ * @returns A`Dataset`object containing K randomly initialized centroids, or NULL if an error occurs.
  */
 Dataset *create_random_centroids(size_t number_of_features, size_t K)
 {
     Dataset *centroids = malloc(sizeof(Dataset));
     if (centroids == NULL)
     {
-        perror("[create_random_centroids] Failed to allocate memory for centroids\n");
+        fprintf(stderr, "[create_random_centroids] Failed to allocate memory for centroids\n");
         return NULL;
     }
     centroids->samples = malloc(K * sizeof(Sample));
     if (centroids->samples == NULL)
     {
-        perror("[create_random_centroids] Failed to allocate memory for centroids->samples\n");
+        fprintf(stderr, "[create_random_centroids] Failed to allocate memory for centroids->samples\n");
         free_dataset(centroids);
         return NULL;
     }
@@ -968,6 +1032,8 @@ Dataset *create_random_centroids(size_t number_of_features, size_t K)
  * @param centroids A pointer to a `Dataset` object containing the array of centroids and its count.
  * @param number_of_features The number of features.
  * @param tolerance The minimum amount of distance the new centroid's features should be for it to move.
+ *
+ * @returns An array containing the number (size_t) of samples per centroid, or NULL if an error occurs.
  *
  * @note This function stops when centroids no longer move significantly.
  */
@@ -1032,8 +1098,10 @@ size_t *run_kmeans_to_convergence(Dataset *dataset, Dataset *centroids, size_t n
  * @param restarts To avoid as much as possible a bad local minimum with high inertia,
  * restart the algorithm and pick the best.
  *
- * @note This function executes the K-means algorithm in a loop,
- * with K in {`K_begin`, ..., `K_end`}.
+ * @returns SUCCESS or FAILURE.
+ *
+ * @note This function executes the K-Means algorithm in a loop,
+ * with K in { `K_begin`, ..., `K_end` }.
  */
 int elbow_method(Dataset *dataset, size_t number_of_features, size_t K_begin, size_t K_end, double tolerance, double drop_threshold, int restarts, bool save_output)
 {
@@ -1177,14 +1245,14 @@ void print_usage(const char *program_name)
     printf("  -f <string>           Dataset file path\n");
     printf("  -n <integer>          Number of features per sample (default: 1)\n");
     printf("  -t <float>            Minimum value for a centroid's movement to be recognized (default: 0.001)\n");
-    printf("  -r <integer>          Higher accuracy but slower (default: 5)\n");
+    printf("  -r <integer>          Number of restarts; Higher accuracy but slower (default: 0)\n");
     printf("  -k <integer>          Set the K value (default: 1)\n");
-    printf("  -e <integer>          End algorithm at K_end value, used with elbow method (default: 10)\n");
+    printf("  -e <integer>          Increment K until reaching this value, used with elbow method (default: 10)\n");
     printf("  -d <float>            Difference between the inertia values of K-1 and K, used with elbow method (default: 0.1 meaning 10%%)\n");
     printf("  -o                    Save output in current directory as 'output.txt' (false by default)\n");
     printf("  --std                 Standardize all sample features (false by default)\n");
     printf("  --elbow               Use the elbow method to find the most optimal K (false by default)\n");
-    printf("  --force-k             Continue until reaching the max K desired (K_end), used with elbow method (false by default)\n");
+    printf("  --force-k             Without this, elbow method stops when reaching the 'elbow'... (false by default)\n");
     printf("  --tdel <string>       Token delimiter (default: space)\n");
     printf("  --ddel <char>         Decimal delimiter (default: .)\n");
     printf("  --cdel <string>       Comment delimiter (default: #)\n");
@@ -1202,7 +1270,7 @@ Args parse_args(int argc, char **argv)
     strncpy(args.dataset_path, "", MAX_PATH-1);
     args.number_of_features = 1;
     args.tolerance = 0.001;
-    args.restarts = 1;
+    args.restarts = 0;
     args.K = 1;
     args.K_end = 1;
     args.drop_threshold = 0.1;
@@ -1216,6 +1284,7 @@ Args parse_args(int argc, char **argv)
     args.debug = false;
 
     bool elbow_auto_enabled = false;
+    bool k_end_set = false;
 
     for (int i = 1; i < argc; i++)
     {
@@ -1267,6 +1336,7 @@ Args parse_args(int argc, char **argv)
             }
             args.use_elbow_method = true; // enable automatically
             elbow_auto_enabled = true;
+            k_end_set = true;
         }
         else if (strcmp(argv[i], "-d") == 0 && i+i < argc)
         {
@@ -1310,13 +1380,27 @@ Args parse_args(int argc, char **argv)
             exit((strcmp(argv[i], "help") == 0) ? EXIT_SUCCESS : EXIT_FAILURE);
         }
     }
+    
     if (elbow_auto_enabled)
         printf("Elbow method enabled automatically (used an arg that requires --elbow)\n");
+
     if (args.use_elbow_method && args.K_end < args.K)
     {
-        args.K_end = args.K * 2;
-        printf("Detected a bigger K value than max K. Using %zu (K*2) for max K\n", args.K_end);
+        if (k_end_set)
+        {
+            printf("Detected a bigger K value than max K (arg: -e), switching K and max K (%zu <-> %zu)\n", args.K, args.K_end);
+            size_t temp = args.K_end;
+            args.K_end = args.K;
+            args.K = temp;
+        }
+        else
+        {
+            printf("Detected that elbow method is enabled but max K value was not passed (arg: -e)\n");
+            args.K_end = args.K + 1;
+            printf("Max K value set to K+1: %zu\n", args.K_end);
+        }
     }
+
     return args;
 }
 
@@ -1331,14 +1415,14 @@ int main(int argc, char *argv[])
         printf("Dataset path: %s\n",  global_args.dataset_path);
         printf("Number of features: %zu\n",  global_args.number_of_features);
         printf("Tolerance: %g\n",  global_args.tolerance);
-        printf("Number of restarts: %zu\n",  global_args.restarts);
+        printf("Number of restarts: %zu\n", global_args.restarts);
         printf("K value: %zu\n",  global_args.K);
         printf("Max K: %zu%s\n", global_args.K_end, global_args.use_elbow_method ? "" : " (unused)");
         printf("Drop threshold: %g%s\n",  global_args.drop_threshold, global_args.use_elbow_method ? "" : " (unused)");
         printf("Standardize: %s\n", global_args.standardize ? "true" : "false");
         printf("Save output: %s\n", global_args.save_output ? "true" : "false");
         printf("Use elbow method: %s\n", global_args.use_elbow_method ? "true" : "false");
-        printf("Force reach K: %s%s\n", global_args.force_reach_K ? "true" : "false", global_args.use_elbow_method ? "" : " (unused)");
+        printf("Force max K: %s%s\n", global_args.force_reach_K ? "true" : "false", global_args.use_elbow_method ? "" : " (unused)");
         printf("Token delimiter: '%s'\n", global_args.token_delimiter);
         printf("Decimal delimiter: '%c'\n", global_args.decimals_delimiter);
         printf("Comment delimiter: '%s'\n", global_args.comment_delimiter);
@@ -1347,6 +1431,8 @@ int main(int argc, char *argv[])
     
     // Initialize the randomizer using the current timestamp as seed
     srand((unsigned int)time(NULL));
+
+    size_t number_of_runs = global_args.restarts + 1; // even if `restarts` is set to 0, the algorithm will run at least once
 
     if (global_args.debug) printf("[main] Loading dataset\n");
     Dataset *dataset = read_data_from_file(
@@ -1362,9 +1448,11 @@ int main(int argc, char *argv[])
     double *mean = calculate_mean(dataset, global_args.number_of_features); // freed at the end of main function
     if (mean == NULL)
     {
+        fprintf(stderr, "[main] Failed to calculate mean values\n");
         free_dataset(dataset);
         return EXIT_FAILURE;
     }
+
     double *standard_deviation = calculate_std_deviation(
         dataset, mean, global_args.number_of_features
     );  // freed at the end of main function
@@ -1378,7 +1466,7 @@ int main(int argc, char *argv[])
 
     if (global_args.standardize)
     {
-        if (global_args.debug) printf("[main] Standardizing sample features\n");
+        if (global_args.debug) printf("[main] Standardizing samples' features\n");
         if (standardize_data(dataset, mean, standard_deviation, global_args.number_of_features) == FAILURE)
         {
             fprintf(stderr, "[main] Failed to standardize data\n");
@@ -1393,7 +1481,7 @@ int main(int argc, char *argv[])
 
     if (global_args.K == 0)
     {
-        fprintf(stderr, "[main] Failed to run K-means algorithm: K value equals 0.\n");
+        fprintf(stderr, "[main] Failed to run K-means algorithm: K value is 0.\n");
         free(standard_deviation);
         free(mean);
         free_dataset(dataset);
@@ -1416,7 +1504,7 @@ int main(int argc, char *argv[])
             dataset, global_args.number_of_features,
             global_args.K, global_args.K_end,
             global_args.tolerance, global_args.drop_threshold,
-            global_args.restarts, global_args.save_output) == FAILURE)
+            number_of_runs, global_args.save_output) == FAILURE)
         {
             fprintf(stderr, "[main] An error occured while executing the elbow method\n");
             free(standard_deviation);
@@ -1429,12 +1517,12 @@ int main(int argc, char *argv[])
     else // Don't use the elbow method
     {
         if (global_args.debug)
-            printf("[main] Running the algorithm with K value %zu (restarts: %zu)\n", global_args.K, global_args.restarts);
+            printf("[main] Running the algorithm with K value %zu (total number of runs: %zu)\n", global_args.K, number_of_runs);
         
         double best_inertia = __DBL_MAX__;
         Dataset *best_result_centroids = NULL;
         size_t *best_result_samples_per_centroid = NULL;
-        for (size_t r = 0; r < global_args.restarts; ++r)
+        for (size_t r = 0; r < number_of_runs; ++r)
         {
             if (global_args.debug) printf("[main] Loop number %zu\n", r);
 
@@ -1442,6 +1530,7 @@ int main(int argc, char *argv[])
             Dataset *centroids = create_random_centroids(global_args.number_of_features, global_args.K);
             if (centroids == NULL)
             {
+                fprintf(stderr, "[main] Failed to create random centroids\n");
                 free(standard_deviation);
                 free(mean);
                 free_dataset(dataset);
@@ -1451,8 +1540,9 @@ int main(int argc, char *argv[])
             size_t *samples_per_centroid = run_kmeans_to_convergence(
                 dataset, centroids, global_args.number_of_features, global_args.tolerance
             );
-            if (centroids == NULL)
+            if (samples_per_centroid == NULL)
             {
+                fprintf(stderr, "[main] Failed to get the number of samples per centroid\n");
                 free_dataset(centroids);
                 free(standard_deviation);
                 free(mean);
@@ -1464,6 +1554,7 @@ int main(int argc, char *argv[])
             double *inertia_per_centroid = calculate_inertia(dataset, centroids, global_args.number_of_features);
             if (inertia_per_centroid == NULL)
             {
+                fprintf(stderr, "[main] Failed to calculate inertia\n");
                 free(samples_per_centroid);
                 free_dataset(centroids);
                 free(standard_deviation);
@@ -1498,10 +1589,12 @@ int main(int argc, char *argv[])
                 free(samples_per_centroid);
             }
         }
+        
         if (output_centroids(
             best_result_centroids, NULL, best_result_samples_per_centroid,
             global_args.number_of_features, global_args.save_output) == FAILURE)
         {
+            fprintf(stderr, "[main] Failed to output centroid data\n");
             free(standard_deviation);
             free(mean);
             free_dataset(dataset);
